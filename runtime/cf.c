@@ -186,7 +186,13 @@ SHIM(_CFStringGetLength) { RET(CFStringGetLength(CFI(0))); }
 SHIM(_CFStringGetCharacterAtIndex) { RET(CFStringGetCharacterAtIndex(CFI(0), CFINDEX(1))); }
 SHIM(_CFStringGetCharacters) {
     /* (str, CFRange{loc,len}, UniChar *buf) */
-    CFStringGetCharacters(CFI(0), CFRangeMake(CFINDEX(1), CFINDEX(2)), PTR(ARG(3)));
+    /* Old CF tolerated ranges past the end (the game asks for length + 1); clamp and zero-fill. */
+    CFStringRef str = CFI(0);
+    CFIndex len = CFStringGetLength(str), loc = CFINDEX(1), n = CFINDEX(2), ok = n;
+    if (loc > len) loc = len;
+    if (loc + ok > len) ok = len - loc;
+    CFStringGetCharacters(str, CFRangeMake(loc, ok), PTR(ARG(3)));
+    if (n > ok) memset((uint8_t *)PTR(ARG(3)) + 2 * ok, 0, (size_t)(n - ok) * 2);
 }
 SHIM(_CFStringGetCString) { RET(CFStringGetCString(CFI(0), PTR(ARG(1)), CFINDEX(2), ARG(3))); }
 SHIM(_CFStringGetCStringPtr) { RET(0); /* host storage is not guest-addressable; NULL is allowed */ }
@@ -220,6 +226,47 @@ SHIM(_CFStringFindCharacterFromSet) {
     }
     RET(ok);
 }
+/* ---- formatting (CFString formats with %@) ---- */
+#include "format.h"
+#include <stdlib.h>
+
+static void format_object(WOut *o, uint32_t g) {
+    CFTypeRef obj = cf_in(g);
+    CFStringRef d = !obj ? CFSTR("(null)")
+                  : CFGetTypeID(obj) == CFStringGetTypeID() ? (CFStringRef)CFRetain(obj) : CFCopyDescription(obj);
+    CFIndex n = CFStringGetLength(d);
+    for (CFIndex i = 0; i < n; i++) rt_wout_put(o, CFStringGetCharacterAtIndex(d, i));
+    CFRelease(d);
+}
+
+static CFStringRef format_cf(CFStringRef fmt, uint32_t va) {
+    rt_format_object = format_object;
+    CFIndex n = CFStringGetLength(fmt);
+    wchar_t *wf = malloc(sizeof(wchar_t) * (size_t)(n + 1));
+    for (CFIndex i = 0; i < n; i++) wf[i] = CFStringGetCharacterAtIndex(fmt, i);
+    wf[n] = 0;
+    size_t len;
+    wchar_t *out = rt_format_host(wf, va, &len);
+    free(wf);
+    UniChar *u = malloc(sizeof(UniChar) * (len ? len : 1));
+    for (size_t i = 0; i < len; i++) u[i] = (UniChar)out[i];
+    free(out);
+    CFStringRef r = CFStringCreateWithCharacters(NULL, u, (CFIndex)len);
+    free(u);
+    return r;
+}
+
+SHIM(_CFStringCreateWithFormat) {
+    /* (allocator, formatOptions, format, ...) */
+    RETCF_OWNED(format_cf(CFI(2), ARGADDR(3)));
+}
+SHIM(_CFStringAppendFormatAndArguments) {
+    /* (mutable string, formatOptions, format, va_list) */
+    CFStringRef r = format_cf(CFI(2), ARG(3));
+    CFStringAppend((CFMutableStringRef)CFI(0), r);
+    CFRelease(r);
+}
+
 SHIM(_CFStringCreateArrayBySeparatingStrings) { RETCF_OWNED(CFStringCreateArrayBySeparatingStrings(NULL, CFI(1), CFI(2))); }
 
 /* ---- character sets ---- */
@@ -393,7 +440,24 @@ SHIM(_CFURLCreateCopyDeletingLastPathComponent) { RETCF_OWNED(CFURLCreateCopyDel
 
 /* ---- bundles ---- */
 SHIM(_CFBundleGetMainBundle) { RETCF(g_main_bundle); }
-SHIM(_CFBundleCreate) { RETCF_OWNED(CFBundleCreate(NULL, CFI(1))); }
+SHIM(_CFBundleCreate) {
+    CFURLRef u = CFI(1);
+    CFBundleRef b = CFBundleCreate(NULL, u);
+    if (!b && u) {
+        /* Old CF accepted bundle URLs not marked as directories; retry as one. */
+        CFStringRef p = CFURLCopyFileSystemPath(u, kCFURLPOSIXPathStyle);
+        CFURLRef d = CFURLCreateWithFileSystemPath(NULL, p, kCFURLPOSIXPathStyle, true);
+        b = CFBundleCreate(NULL, d);
+        CFRelease(d);
+        if (!b) {
+            char buf[1024];
+            CFStringGetCString(p, buf, sizeof buf, kCFStringEncodingUTF8);
+            rt_log("CFBundleCreate failed for %s", buf);
+        }
+        CFRelease(p);
+    }
+    RETCF_OWNED(b);
+}
 SHIM(_CFBundleCopyBundleURL) { RETCF_OWNED(CFBundleCopyBundleURL(CFI(0))); }
 SHIM(_CFBundleCopyResourcesDirectoryURL) { RETCF_OWNED(CFBundleCopyResourcesDirectoryURL(CFI(0))); }
 SHIM(_CFBundleCopyResourceURL) { RETCF_OWNED(CFBundleCopyResourceURL(CFI(0), CFI(1), CFI(2), CFI(3))); }
@@ -454,7 +518,8 @@ const ShimDef shims_cf[] = {
     SHIM_ENTRY(_CFStringGetSystemEncoding), SHIM_ENTRY(_CFStringGetIntValue), SHIM_ENTRY(_CFStringCompare),
     SHIM_ENTRY(_CFStringAppend), SHIM_ENTRY(_CFStringDelete), SHIM_ENTRY(_CFStringReplace),
     SHIM_ENTRY(_CFStringLowercase), SHIM_ENTRY(_CFStringFind), SHIM_ENTRY(_CFStringFindCharacterFromSet),
-    SHIM_ENTRY(_CFStringCreateArrayBySeparatingStrings), SHIM_ENTRY(_CFCharacterSetGetPredefined),
+    SHIM_ENTRY(_CFStringCreateArrayBySeparatingStrings), SHIM_ENTRY(_CFStringCreateWithFormat),
+    SHIM_ENTRY(_CFStringAppendFormatAndArguments), SHIM_ENTRY(_CFCharacterSetGetPredefined),
     SHIM_ENTRY(_CFCharacterSetCreateWithCharactersInString), SHIM_ENTRY(_CFCharacterSetIsCharacterMember),
     SHIM_ENTRY(_CFCharacterSetIsLongCharacterMember), SHIM_ENTRY(_CFNumberCreate), SHIM_ENTRY(_CFNumberGetValue),
     SHIM_ENTRY(_CFBooleanGetValue), SHIM_ENTRY(_CFAbsoluteTimeGetCurrent), SHIM_ENTRY(_CFDateCreate),

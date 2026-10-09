@@ -5,6 +5,8 @@
 #include "cf.h"
 
 #include <dlfcn.h>
+#include <sys/ucontext.h>
+#include <mach-o/dyld.h>
 #include <limits.h>
 #include <errno.h>
 #include <execinfo.h>
@@ -44,10 +46,18 @@ static uint32_t *g_sym_addr;
 static char **g_sym_name;
 static size_t g_sym_n;
 
+/* Absolute path of a file in the build directory (the game chdirs away). */
+static char g_build_dir[PATH_MAX];
+const char *rt_build_path(const char *rel, char *buf, size_t n) {
+    snprintf(buf, n, "%s/%s", g_build_dir, rel);
+    return buf;
+}
+
 static void load_symbols(void) {
     if (g_sym_n) return;
+    char pbuf[PATH_MAX];
     const char *path = getenv("CIV4_SYMBOLS");
-    FILE *f = fopen(path ? path : "build/gen/symbols.txt", "r");
+    FILE *f = fopen(path ? path : rt_build_path("gen/symbols.txt", pbuf, sizeof pbuf), "r");
     if (!f) return;
     size_t cap = 1 << 17;
     g_sym_addr = malloc(cap * sizeof *g_sym_addr);
@@ -99,7 +109,16 @@ static void backtrace_guest(CPU *cpu) {
     }
 }
 
+void rt_report_watch(CPU *cpu, int i, uint32_t old, uint32_t now, uint32_t last_import) {
+    extern const char *const g_import_names[];
+    fprintf(stderr, "\n[rt] WATCH #%d: %08x -> %08x (since host call %s)\n", i, old, now,
+            last_import < g_import_count ? g_import_names[last_import] : "?");
+    backtrace_guest(cpu);
+}
+
+void rt_dump_recent_calls(void);
 static void on_trap(CPU *cpu, uint32_t addr, const char *what) {
+    rt_dump_recent_calls();
     fprintf(stderr, "\n[rt] TRAP: %s (0x%08x)\n", what, addr);
     fprintf(stderr, "  eax=%08x ecx=%08x edx=%08x ebx=%08x esp=%08x ebp=%08x esi=%08x edi=%08x\n",
             cpu->r[0], cpu->r[1], cpu->r[2], cpu->r[3], cpu->r[4], cpu->r[5], cpu->r[6], cpu->r[7]);
@@ -130,15 +149,116 @@ static void backtrace_host(void) {
     }
 }
 
+void rt_dump_recent_calls(void);
 static void on_crash(int sig, siginfo_t *si, void *uc) {
     (void)uc;
+    rt_dump_recent_calls();
+    extern uint64_t g_import_calls;
+    fprintf(stderr, "\n[rt] host call count at crash: %llu\n", (unsigned long long)g_import_calls);
+    if (t_cpu)
+        fprintf(stderr, "[rt] guest esp %08x args %08x %08x %08x\n", t_cpu->r[4], R32_(g_mem, t_cpu->r[4] + 4),
+                R32_(g_mem, t_cpu->r[4] + 8), R32_(g_mem, t_cpu->r[4] + 12));
     uint8_t *a = si->si_addr;
+    if (uc)
+        fprintf(stderr, "[rt] faulting host pc %llx (slide %lx) -- tools/guestpc.sh maps it to x86\n",
+                (unsigned long long)((ucontext_t *)uc)->uc_mcontext->__ss.__pc, (long)_dyld_get_image_vmaddr_slide(0));
+    if (t_cpu)
+        fprintf(stderr, "[rt] last spilled guest regs: eax=%08x ecx=%08x edx=%08x ebx=%08x esp=%08x ebp=%08x esi=%08x edi=%08x\n",
+                t_cpu->r[0], t_cpu->r[1], t_cpu->r[2], t_cpu->r[3], t_cpu->r[4], t_cpu->r[5], t_cpu->r[6], t_cpu->r[7]);
+    if (t_cpu && getenv("CIV4_CRASH_DEREF")) {
+        /* Debug aid: dump the object passed as the first stack argument, and the
+         * table it points to at the given offset (CIV4_CRASH_DEREF=offset). */
+        uint32_t obj = R32_(g_mem, t_cpu->r[4] + 4), off = (uint32_t)strtoul(getenv("CIV4_CRASH_DEREF"), NULL, 16);
+        uint32_t tab = R32_(g_mem, obj + off);
+        fprintf(stderr, "[rt] obj %08x:", obj);
+        for (int i = 0; i < 8; i++) fprintf(stderr, " %08x", R32_(g_mem, obj + 4 * i));
+        fprintf(stderr, "\n[rt] table %08x:", tab);
+        for (int i = 0; i < 20; i++) fprintf(stderr, " %08x", R32_(g_mem, tab + 4 * i));
+        fprintf(stderr, "\n");
+    }
     if (a >= g_mem && a < g_mem + ((size_t)1 << 32))
         fprintf(stderr, "\n[rt] CRASH: signal %d, guest address %08x\n", sig, (uint32_t)(a - g_mem));
     else
         fprintf(stderr, "\n[rt] CRASH: signal %d, host address %p\n", sig, (void *)a);
     backtrace_host();
     _exit(71);
+}
+
+/* ---- in-process hardware watchpoints (ARM64 debug registers) ----
+ * CIV4_HWWATCH=AAAAAAAA@NNNNNNNNNNN: at host call N, watch stores to guest
+ * address A (8 bytes). Each hit is reported and the store is allowed to proceed. */
+#include <mach/mach.h>
+static uint64_t g_hw_addr;
+static int g_hw_hits, g_hw_rearm;
+
+static void hw_set(int enable) {
+    arm_debug_state64_t ds;
+    memset(&ds, 0, sizeof ds);
+    if (enable) {
+        ds.__wvr[0] = g_hw_addr & ~7ull;
+        ds.__wcr[0] = (0xFFu << 5) | (2u << 3) | (2u << 1) | 1u; /* 8 bytes, stores, EL0, enabled */
+    }
+    kern_return_t kr = thread_set_state(mach_thread_self(), ARM_DEBUG_STATE64, (thread_state_t)&ds,
+                                        ARM_DEBUG_STATE64_COUNT);
+    if (kr != KERN_SUCCESS) fprintf(stderr, "[rt] hw watch: thread_set_state failed (%d)\n", kr);
+}
+
+void rt_hw_watch_at_call(uint64_t call) {
+    static uint32_t addr;
+    static uint64_t at = UINT64_MAX;
+    if (at == UINT64_MAX) {
+        const char *w = getenv("CIV4_HWWATCH");
+        at = UINT64_MAX - 1;
+        if (w) {
+            char *e;
+            addr = (uint32_t)strtoul(w, &e, 16);
+            at = *e == '@' ? strtoull(e + 1, NULL, 10) : 0;
+        }
+    }
+    if (g_hw_rearm) {
+        g_hw_rearm = 0;
+        hw_set(1);
+    }
+    if (call == at) {
+        g_hw_addr = (uint64_t)(g_mem + addr);
+        hw_set(1);
+        fprintf(stderr, "[rt] hw watch armed on %08x at call %llu\n", addr, (unsigned long long)call);
+    }
+}
+
+static void on_trap_signal(int sig, siginfo_t *si, void *ucv) {
+    (void)sig; (void)si;
+    ucontext_t *uc = ucv;
+    uint64_t pc = uc->uc_mcontext->__ss.__pc;
+    Dl_info di;
+    /* Ignore the allocator's own bookkeeping writes (static dlmalloc helpers
+     * resolve to the nearest exported mspace_* symbol). */
+    if (getenv("CIV4_HWWATCH_SKIP_HEAP") && dladdr((void *)pc, &di) && di.dli_sname &&
+        (!strncmp(di.dli_sname, "mspace_", 7) || !strncmp(di.dli_sname, "create_mspace", 13))) {
+        hw_set(0);
+        g_hw_rearm = 1;
+        return;
+    }
+    extern uint64_t g_import_calls;
+    fprintf(stderr, "\n[rt] HW WATCH hit #%d at call %llu, host pc %llx", ++g_hw_hits, (unsigned long long)g_import_calls,
+            (unsigned long long)pc);
+    if (dladdr((void *)pc, &di) && di.dli_sname)
+        fprintf(stderr, " (%s+%ld)", di.dli_sname, (long)(pc - (uint64_t)di.dli_saddr));
+    fprintf(stderr, "; value before store: %016llx\n", *(unsigned long long *)(g_hw_addr & ~7ull));
+    {
+        void *frames[24];
+        int n = backtrace(frames, 24);
+        fprintf(stderr, "  raw pcs (slide %lx): %llx", (long)_dyld_get_image_vmaddr_slide(0), (unsigned long long)pc);
+        for (int i = 0; i < n; i++) fprintf(stderr, " %p", frames[i]);
+        fprintf(stderr, "\n");
+    }
+    if (t_cpu)
+        fprintf(stderr, "  guest esp %08x ebp %08x args %08x %08x %08x\n", t_cpu->r[4], t_cpu->r[5],
+                R32_(g_mem, t_cpu->r[4] + 4), R32_(g_mem, t_cpu->r[4] + 8), R32_(g_mem, t_cpu->r[4] + 12));
+    backtrace_host();
+    /* Let the store happen; re-arm at the next host call. */
+    hw_set(0);
+    g_hw_rearm = g_hw_hits < 12;
 }
 
 static void install_crash_handler(void) {
@@ -153,6 +273,12 @@ static void install_crash_handler(void) {
     sigaction(SIGBUS, &sa, NULL);
     sigaction(SIGILL, &sa, NULL);
     sigaction(SIGFPE, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    struct sigaction st;
+    memset(&st, 0, sizeof st);
+    st.sa_sigaction = on_trap_signal;
+    st.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigaction(SIGTRAP, &st, NULL);
 }
 
 _Noreturn void rt_fatal(const char *fmt, ...) {
@@ -250,7 +376,8 @@ static void load_world(const char *path) {
     fclose(f);
 }
 
-extern const ShimDef shims_libc[], shims_stdio[], shims_pthread[], shims_cf[], shims_files[], shims_posix[], shims_carbon[], shims_dyld[];
+extern const ShimDef shims_libc[], shims_stdio[], shims_pthread[], shims_cf[], shims_files[], shims_posix[], shims_carbon[], shims_dyld[], shims_events[],
+    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[];
 
 static void register_all_shims(void) {
     rt_register_shims(shims_libc);
@@ -261,6 +388,14 @@ static void register_all_shims(void) {
     rt_register_shims(shims_posix);
     rt_register_shims(shims_carbon);
     rt_register_shims(shims_dyld);
+    rt_register_shims(shims_events);
+    rt_register_shims(shims_platform);
+    rt_register_shims(shims_agl);
+    rt_register_shims(shims_gl_gen);
+    rt_register_shims(shims_gl_special);
+    rt_register_shims(shims_qd);
+    rt_register_shims(shims_cf_xml);
+    rt_register_shims(shims_iokit);
     uint32_t have = 0;
     for (uint32_t i = 0; i < g_import_count; i++) have += g_import_shims[i] != NULL;
     rt_log("%u/%u host imports implemented", have, g_import_count);
@@ -271,15 +406,26 @@ void rt_cf_init(void);
 
 int main(int argc, char **argv) {
     const char *world = getenv("CIV4_WORLD");
+    /* Everything we load lives next to this executable (build/). */
+    {
+        char exe[PATH_MAX], real[PATH_MAX];
+        uint32_t n = sizeof exe;
+        if (_NSGetExecutablePath(exe, &n) || !realpath(exe, real)) rt_fatal("cannot locate executable");
+        *strrchr(real, '/') = 0;
+        strlcpy(g_build_dir, real, sizeof g_build_dir);
+    }
+    char pbuf[PATH_MAX];
     /* The guest's Python standard library (the old system Python 2.6 is gone). */
-    if (!getenv("PYTHONHOME")) {
-        char home[PATH_MAX];
-        if (realpath("build/pylib", home)) setenv("PYTHONHOME", home, 1);
+    if (!getenv("PYTHONHOME")) setenv("PYTHONHOME", rt_build_path("pylib", pbuf, sizeof pbuf), 1);
+    if (!getenv("CIV4_APP")) {
+        char app[PATH_MAX];
+        if (realpath(rt_build_path("game/Beyond the Sword/Civilization IV Beyond the Sword.app", pbuf, sizeof pbuf), app))
+            setenv("CIV4_APP", app, 1);
     }
     if (rt_arena_init()) rt_fatal("cannot reserve guest arena");
     rt_trap_hook = on_trap;
     install_crash_handler();
-    load_world(world ? world : "build/gen/world.img");
+    load_world(world ? world : rt_build_path("gen/world.img", pbuf, sizeof pbuf));
     if (rt_heap_init()) rt_fatal("cannot create guest heap");
     if (mprotect(g_mem + STACK_TOP - STACK_SIZE, STACK_SIZE, PROT_READ | PROT_WRITE)) rt_fatal("stack");
     register_all_shims();

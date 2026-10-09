@@ -58,7 +58,8 @@ SHIM(_Gestalt) {
     case 'sys1': v = 10; break;
     case 'sys2': v = 6; break;
     case 'sys3': v = 8; break;
-    case 'ram ': v = 0x7fffffff; break;
+    case 'ram ': case 'lram': v = 0x7fffffff; break;
+    case 'mclk': v = 2000; break;             /* gestaltProcClkSpeedMHz */
     case 'cput': v = 0x0108; break;           /* gestaltCPUPentium4-class x86 */
     case 'sysa': v = 10; break;               /* gestaltIntel */
     case 'pclk': case 'bclk': v = 2000000000u; break;
@@ -97,11 +98,62 @@ SHIM(_GetCurrentProcess) {
     W32_(g_mem, ARG(0) + 4, 2);
     RET(noErr);
 }
+SHIM(_GetProcessInformation) {
+    /* ProcessInfoRec (2-byte packed): length 0, name 4, psn 8, type 16, sig 20, mode 24,
+     * location 28, size 32, freeMem 36, launcher 40, launchDate 48, activeTime 52, appSpec 56 */
+    uint32_t r = ARG(1);
+    if (R32_(g_mem, r + 4)) { /* processName: Pascal string buffer */
+        const char *n = "Civilization IV Beyond the Sword";
+        W8_(g_mem, R32_(g_mem, r + 4), (uint32_t)strlen(n));
+        memcpy(PTR(R32_(g_mem, r + 4) + 1), n, strlen(n));
+    }
+    W32_(g_mem, r + 8, 0);
+    W32_(g_mem, r + 12, 2);
+    W32_(g_mem, r + 16, 'APPL');
+    W32_(g_mem, r + 20, 'CIV4');
+    W32_(g_mem, r + 24, 0);
+    W32_(g_mem, r + 32, 0x7fffffff);
+    W32_(g_mem, r + 36, 0x40000000);
+    RET(noErr);
+}
+SHIM(_PBHGetVInfoSync) {
+    /* HVolumeParam: ioResult 16, ioVAlBlkSiz 48, ioVFrBlk 62 (16-bit). Report lots of space. */
+    uint32_t pb = ARG(0);
+    W16_(g_mem, pb + 16, 0);
+    W32_(g_mem, pb + 48, 0x10000);
+    W16_(g_mem, pb + 62, 0xffff);
+    W16_(g_mem, pb + 46, 0xffff);
+    RET(noErr);
+}
 SHIM(_GetProcessPID) { W32_(g_mem, ARG(1), (uint32_t)getpid()); RET(noErr); }
 SHIM(_CSCopyUserName) {
     const char *u = getenv("USER");
     RETCF_OWNED(CFStringCreateWithCString(NULL, u ? u : "Player", kCFStringEncodingUTF8));
 }
+
+/* ---- Thread Manager / toolbox init ---- */
+SHIM(_GetCurrentThread) { W32_(g_mem, ARG(0), 1); RET(noErr); }
+SHIM(_SetThreadTerminator) { RET(noErr); }
+SHIM(_GetThreadState) { if (ARG(1)) W16_(g_mem, ARG(1), 0 /* kRunningThreadState */); RET(noErr); }
+SHIM(_FlushEvents) {}
+SHIM(_InitCursor) {}
+SHIM(_SetQDGlobalsRandomSeed) {}
+
+/* ---- keyboard state (KeyMap: 128 bits); filled by the event layer ---- */
+uint8_t g_keymap[16];
+SHIM(_GetKeys) { memcpy(PTR(ARG(0)), g_keymap, 16); }
+
+/* ---- Apple Events: accepted, never delivered ---- */
+SHIM(_AEInstallEventHandler) { RET(noErr); }
+
+/* ---- Interface Builder nibs: not available; callers treat failure as "no nib" ---- */
+SHIM(_CreateNibReferenceWithCFBundle) { W32_(g_mem, ARG(2), 0); RET(-43); }
+SHIM(_CreateNibReference) { W32_(g_mem, ARG(1), 0); RET(-43); }
+
+/* ---- QuickTime presence (the game checks for it; movies are handled separately) ---- */
+SHIM(_EnterMovies) { RET(noErr); }
+/* Pretend every requested component exists; the game only checks for presence here. */
+SHIM(_FindNextComponent) { RET(1); }
 
 /* ---- Debugger: log instead of trapping ---- */
 SHIM(_Debugger) { rt_log("guest called Debugger()"); }
@@ -111,7 +163,11 @@ const ShimDef shims_carbon[] = {
     SHIM_ENTRY(_MPSetTaskStorageValue), SHIM_ENTRY(_MPGetTaskStorageValue), SHIM_ENTRY(_MPProcessors),
     SHIM_ENTRY(_MPAllocateAligned), SHIM_ENTRY(_MPFree), SHIM_ENTRY(_NewPtrClear), SHIM_ENTRY(_DisposePtr),
     SHIM_ENTRY(_Gestalt), SHIM_ENTRY(_Microseconds), SHIM_ENTRY(_TickCount), SHIM_ENTRY(_GetDblTime),
-    SHIM_ENTRY(_GetDateTime), SHIM_ENTRY(_GetCurrentProcess), SHIM_ENTRY(_GetProcessPID),
-    SHIM_ENTRY(_CSCopyUserName), SHIM_ENTRY(_Debugger),
+    SHIM_ENTRY(_GetDateTime), SHIM_ENTRY(_GetCurrentProcess), SHIM_ENTRY(_GetProcessPID), SHIM_ENTRY(_GetProcessInformation), SHIM_ENTRY(_PBHGetVInfoSync),
+    SHIM_ENTRY(_CSCopyUserName), SHIM_ENTRY(_Debugger), SHIM_ENTRY(_GetCurrentThread), SHIM_ENTRY(_FlushEvents),
+    SHIM_ENTRY(_SetThreadTerminator), SHIM_ENTRY(_GetThreadState),
+    SHIM_ENTRY(_InitCursor), SHIM_ENTRY(_SetQDGlobalsRandomSeed), SHIM_ENTRY(_EnterMovies),
+    SHIM_ENTRY(_FindNextComponent), SHIM_ENTRY(_CreateNibReferenceWithCFBundle), SHIM_ENTRY(_CreateNibReference), SHIM_ENTRY(_GetKeys),
+    SHIM_ENTRY(_AEInstallEventHandler),
     {0, 0},
 };

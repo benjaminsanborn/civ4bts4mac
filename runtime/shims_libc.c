@@ -309,16 +309,49 @@ SHIM(_getrlimit$UNIX2003) {
 SHIM(_setrlimit$UNIX2003) { RET(0); }
 SHIM(_setpriority) { RET(0); }
 
-/* mmap: anonymous mappings come from the guest heap. */
+/* mmap: guest memory always comes from the guest heap. File mappings are
+ * copies; shared writable ones are written back on munmap. */
+#define MAX_MAPS 256
+static struct { uint32_t addr, len; int fd; int64_t off; int writeback; } g_maps[MAX_MAPS];
+
 SHIM(_mmap$UNIX2003) {
-    uint32_t len = ARG(1), flags = ARG(3);
-    if (!(flags & 0x1000 /* MAP_ANON */)) rt_fatal("file-backed mmap not supported");
+    /* (addr, len, prot, flags, fd, off_t offset) */
+    uint32_t len = ARG(1), prot = ARG(2), flags = ARG(3);
+    int fd = (int)ARG(4);
+    int64_t off = (int64_t)ARG64(5);
     uint32_t p = gmemalign(0x4000, len);
     if (!p) { rt_set_errno(ENOMEM); RET(0xffffffffu); return; }
     memset(PTR(p), 0, len);
+    if (!(flags & 0x1000 /* MAP_ANON */)) {
+        ssize_t n = pread(fd, PTR(p), len, off);
+        if (n < 0) { gfree(p); rt_set_errno(errno); RET(0xffffffffu); return; }
+        for (int i = 0; i < MAX_MAPS; i++) {
+            if (!g_maps[i].addr) {
+                int wb = (flags & 1 /* MAP_SHARED */) && (prot & 2 /* PROT_WRITE */);
+                g_maps[i].addr = p;
+                g_maps[i].len = len;
+                g_maps[i].fd = wb ? dup(fd) : -1;
+                g_maps[i].off = off;
+                g_maps[i].writeback = wb;
+                break;
+            }
+        }
+    }
     RET(p);
 }
-SHIM(_munmap$UNIX2003) { gfree(ARG(0)); RET(0); }
+SHIM(_munmap$UNIX2003) {
+    for (int i = 0; i < MAX_MAPS; i++) {
+        if (g_maps[i].addr == ARG(0)) {
+            if (g_maps[i].writeback) {
+                pwrite(g_maps[i].fd, PTR(g_maps[i].addr), g_maps[i].len, g_maps[i].off);
+                close(g_maps[i].fd);
+            }
+            g_maps[i].addr = 0;
+        }
+    }
+    gfree(ARG(0));
+    RET(0);
+}
 SHIM(_mprotect$UNIX2003) { RET(0); }
 
 SHIM(_OSAtomicAnd32Barrier) { RET(__atomic_and_fetch((uint32_t *)PTR(ARG(1)), ARG(0), __ATOMIC_SEQ_CST)); }

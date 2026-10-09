@@ -21,6 +21,10 @@ typedef struct {
 } ShimDef;
 
 #define SHIM(sym) static void sh##sym(CPU *cpu)
+
+/* Replace a guest function (by Mach-O symbol) with host code. Arguments and
+ * results work like a SHIM; the generated stub performs the `ret`. */
+#define OVERRIDE(sym) void ov_##sym(CPU *cpu)
 #define SHIM_ENTRY(sym) {#sym, sh##sym}
 
 #define ARG(n) R32_(g_mem, cpu->r[4] + 4 + 4 * (n))
@@ -29,13 +33,15 @@ typedef struct {
 #define ARGF64(n) RF64_(g_mem, cpu->r[4] + 4 + 4 * (n))
 #define ARGADDR(n) (cpu->r[4] + 4 + 4 * (n)) /* guest address of argument n (for va_list) */
 
-/* Guest address <-> host pointer. NULL maps to guest 0 and back. */
-#define PTR(a) ((void *)((a) ? g_mem + (uint32_t)(a) : NULL))
-#define CPTR(a) ((const char *)PTR(a))
-#define GADDR(p) ((p) ? (uint32_t)((uint8_t *)(p) - g_mem) : 0u)
+/* Guest address <-> host pointer. NULL maps to guest 0 and back.
+ * Functions, not macros: arguments are often calls (GADDR(mspace_realloc(...)))
+ * and must be evaluated exactly once. */
+static inline void *PTR(uint32_t a) { return a ? g_mem + a : NULL; }
+static inline const char *CPTR(uint32_t a) { return (const char *)PTR(a); }
+static inline uint32_t GADDR(const void *p) { return p ? (uint32_t)((const uint8_t *)p - g_mem) : 0u; }
 
 #define RET(v) (cpu->r[0] = (uint32_t)(v))
-#define RET64(v) (cpu->r[0] = (uint32_t)(uint64_t)(v), cpu->r[2] = (uint32_t)((uint64_t)(v) >> 32))
+#define RET64(v) do { uint64_t v64__ = (uint64_t)(v); cpu->r[0] = (uint32_t)v64__; cpu->r[2] = (uint32_t)(v64__ >> 32); } while (0)
 #define RETF(v) do { double v__ = (v); cpu->ftop = (cpu->ftop - 1) & 7; cpu->st[cpu->ftop] = v__; } while (0)
 
 /* Guest heap (dlmalloc mspace inside the arena). Returns guest addresses. */
@@ -58,6 +64,7 @@ uint32_t rt_hostdata(const char *name);
 void rt_register_shims(const ShimDef *defs);
 uint32_t rt_dynamic_import(const char *name);
 uint32_t rt_lookup_symbol(const char *name);
+const char *rt_build_path(const char *rel, char *buf, size_t n);
 _Noreturn void rt_fatal(const char *fmt, ...);
 void rt_log(const char *fmt, ...);
 

@@ -57,7 +57,18 @@ void rt_stdio_init(void) {
 /* Guest paths are used as-is (relative to the working directory). */
 SHIM(_fopen$UNIX2003) { FILE *f = fopen(CPTR(ARG(0)), CPTR(ARG(1))); if (!f) rt_set_errno(errno); RET(wrap(f)); }
 SHIM(_fdopen$UNIX2003) { RET(wrap(fdopen((int)ARG(0), CPTR(ARG(1))))); }
-SHIM(_fclose) { FILE *f = hf(ARG(0)); unwrap(ARG(0)); RET(fclose(f)); }
+SHIM(_fclose) {
+    /* The game's mmioClose closes the same FILE twice; old libc shrugged that off. */
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (g_files[i].g == ARG(0)) {
+            FILE *f = g_files[i].h;
+            unwrap(ARG(0));
+            RET(fclose(f));
+            return;
+        }
+    }
+    RET(0xffffffffu);
+}
 SHIM(_fread) { RET(fread(PTR(ARG(0)), ARG(1), ARG(2), hf(ARG(3)))); }
 SHIM(_fwrite$UNIX2003) { RET(fwrite(PTR(ARG(0)), ARG(1), ARG(2), hf(ARG(3)))); }
 SHIM(_fseek) { RET(fseek(hf(ARG(0)), (long)(int32_t)ARG(1), (int)ARG(2))); }
@@ -140,10 +151,7 @@ SHIM(_fstat$INODE64) {
  * Formats with arguments read from guest memory starting at guest address
  * `va` (an i386 va_list is just a pointer into the stack). Output is wide
  * (wchar_t) so one engine serves both families; narrow callers convert. */
-typedef struct {
-    wchar_t *buf;
-    size_t len, cap;
-} WOut;
+#include "format.h"
 
 static void wput(WOut *o, wchar_t c) {
     if (o->len + 1 >= o->cap) {
@@ -157,10 +165,19 @@ static void wputs_n(WOut *o, const char *s, size_t n) {
     for (size_t i = 0; i < n; i++) wput(o, (wchar_t)(unsigned char)s[i]);
 }
 
-/* fmt is either narrow (wide=0) or wide (wide=1) guest string. */
+/* Format characters come from a guest string (narrow or wide) or a host
+ * wchar_t array (CF formats); %@ is delegated to the CF layer. */
+static const wchar_t *g_host_fmt;
+void (*rt_format_object)(WOut *o, uint32_t obj);
+
+static wchar_t fmt_char(uint32_t fmt, int wide, size_t k) {
+    if (wide == 2) return g_host_fmt[k];
+    return wide ? (wchar_t)R32_(g_mem, fmt + 4 * k) : (wchar_t)R8_(g_mem, fmt + k);
+}
+
 static size_t gformat(WOut *o, uint32_t fmt, int wide, uint32_t va) {
     size_t i = 0;
-#define FCH(k) (wide ? (wchar_t)R32_(g_mem, fmt + 4 * (k)) : (wchar_t)R8_(g_mem, fmt + (k)))
+#define FCH(k) fmt_char(fmt, wide, (k))
     for (;;) {
         wchar_t c = FCH(i);
         if (!c) break;
@@ -263,6 +280,11 @@ static size_t gformat(WOut *o, uint32_t fmt, int wide, uint32_t va) {
         case '%':
             wput(o, '%');
             break;
+        case '@':
+            if (!rt_format_object) rt_fatal("printf: %%@ outside CF");
+            rt_format_object(o, R32_(g_mem, va));
+            va += 4;
+            break;
         default:
             rt_fatal("printf: unsupported conversion '%lc'", (wint_t)conv);
         }
@@ -270,6 +292,20 @@ static size_t gformat(WOut *o, uint32_t fmt, int wide, uint32_t va) {
 #undef FCH
     return o->len;
 }
+
+/* Format a host wide format string with guest varargs; returns a malloc'd
+ * wchar_t buffer (caller frees) and its length. */
+wchar_t *rt_format_host(const wchar_t *fmt, uint32_t va, size_t *len) {
+    WOut o = {0};
+    g_host_fmt = fmt;
+    gformat(&o, 0, 2, va);
+    g_host_fmt = NULL;
+    wput(&o, 0);
+    *len = o.len - 1;
+    return o.buf;
+}
+
+void rt_wout_put(WOut *o, wchar_t c) { wput(o, c); }
 
 /* Narrow output: encode wide chars as single bytes (the game's narrow text is Latin-1/ASCII). */
 static uint32_t emit_narrow(WOut *o, uint32_t dst, uint32_t cap) {

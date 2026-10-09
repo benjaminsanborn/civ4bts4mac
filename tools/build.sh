@@ -15,6 +15,6 @@ echo "== link modules"
 (cd tools/recomp && "$PY" world.py "$GAME" "$ROOT/build/guest/python" "$ROOT/build/guest/python" 0x02100000)
 echo "== lift"
 (cd tools/recomp && "$PY" gen.py "$GAME" "$ROOT/build/gen" --all \
-    --module "$ROOT/build/guest/libstdcxx" --module "$ROOT/build/guest/python")
+    --module "$ROOT/build/guest/libstdcxx" --module "$ROOT/build/guest/python" --overrides "$ROOT/runtime")
 echo "== compile"
 tools/build_gen.sh build/gen build/libgame.a

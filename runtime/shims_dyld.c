@@ -18,8 +18,9 @@ static int cmp_export(const void *a, const void *b) {
 }
 
 static void load_exports(void) {
+    char pbuf[4096];
     const char *path = getenv("CIV4_EXPORTS");
-    FILE *f = fopen(path ? path : "build/gen/exports.txt", "r");
+    FILE *f = fopen(path ? path : rt_build_path("gen/exports.txt", pbuf, sizeof pbuf), "r");
     if (!f) rt_fatal("cannot open exports table");
     size_t cap = 1 << 17;
     g_exports = malloc(cap * sizeof *g_exports);

@@ -190,8 +190,66 @@ class Func:
                         break
                 a = nxt
 
+    def pic_base(self, reg: str) -> Optional[int]:
+        """Value of `reg` set by a PIC idiom in this function: `call next; pop reg`
+        or `call ___i686.get_pc_thunk.reg` (both leave the return address in reg)."""
+        for a, i in self.insns.items():
+            if i.mnemonic == "call" and i.operands[0].type == OP_IMM:
+                nxt = a + i.size
+                tgt = i.operands[0].imm & 0xffffffff
+                if self.p.names.get(tgt, "") == f"___i686.get_pc_thunk.{reg[1:]}":
+                    return nxt
+                if tgt == nxt and nxt in self.insns:
+                    p = self.insns[nxt]
+                    if p.mnemonic == "pop" and p.operands[0].type == OP_REG and p.reg_name(p.operands[0].reg) == reg:
+                        return nxt
+        return None
+
+    def relative_jump_table(self, insn) -> List[int]:
+        """PIC switch: mov R, [B + I*4 + disp]; add R, B; jmp R  (entries are offsets from B)."""
+        op = insn.operands[0]
+        if op.type != OP_REG:
+            return []
+        r = insn.reg_name(op.reg)
+        prev = sorted(k for k in self.insns if k < insn.address)[-12:]
+        if len(prev) < 2:
+            return []
+        add, mov = self.insns[prev[-1]], self.insns[prev[-2]]
+        if add.mnemonic != "add" or mov.mnemonic != "mov" or len(add.operands) != 2 or len(mov.operands) != 2:
+            return []
+        if add.operands[0].type != OP_REG or add.reg_name(add.operands[0].reg) != r or add.operands[1].type != OP_REG:
+            return []
+        b = add.reg_name(add.operands[1].reg)
+        m = mov.operands[1]
+        if m.type != OP_MEM or m.mem.scale != 4 or not m.mem.base or mov.reg_name(m.mem.base) != b:
+            return []
+        base = self.pic_base(b)
+        if base is None:
+            return []
+        count = None
+        for k in reversed(prev[:-2]):
+            pi = self.insns[k]
+            if pi.mnemonic == "cmp" and len(pi.operands) == 2 and pi.operands[1].type == OP_IMM:
+                count = (pi.operands[1].imm & 0xffffffff) + 1
+                break
+        if count is None or count > 4096:
+            return []
+        table = (base + m.mem.disp) & 0xffffffff
+        out = []
+        for i in range(count):
+            v = self.p.read32(table + 4 * i)
+            if v is None:
+                return []
+            t = (v + base) & 0xffffffff
+            if not (self.entry <= t < self.end):
+                return []
+            out.append(t)
+        return out
+
     def jump_table(self, insn) -> List[int]:
         op = insn.operands[0]
+        if op.type == OP_REG:
+            return self.relative_jump_table(insn)
         if op.type != OP_MEM or op.mem.scale != 4 or op.mem.base != 0 or op.mem.index == 0:
             return []
         base = op.mem.disp & 0xffffffff
@@ -1055,7 +1113,7 @@ class Emit:
     def pshift(self, kind, lanes, op):
         d, c = self.ops
         dx = self.xmm(d)
-        w = 32 if kind == "d" else 64
+        w = {"w": 16, "d": 32, "q": 64}[kind]
         cnt = f"{c.imm}u" if c.type == OP_IMM else f"(uint32_t){self.sread(c, 'q')}"
         return [f"{{ uint64_t c_ = {cnt}; for (int k_ = 0; k_ < {lanes}; k_++) "
                 f"XMM({dx}).{kind}[k_] = c_ >= {w} ? 0 : XMM({dx}).{kind}[k_] {op} c_; }}"]
@@ -1064,6 +1122,141 @@ class Emit:
     def i_psrld(self): return self.pshift("d", 4, ">>")
     def i_psllq(self): return self.pshift("q", 2, "<<")
     def i_psrlq(self): return self.pshift("q", 2, ">>")
+
+    # ---- SSE2 integer / packed (as emitted by clang's vectorizer) ----
+    def i_paddb(self): return self.packed(16, "b", "(uint8_t)(A + B)")
+    def i_paddw(self): return self.packed(8, "w", "(uint16_t)(A + B)")
+    def i_paddq(self): return self.packed(2, "q", "A + B")
+    def i_psubb(self): return self.packed(16, "b", "(uint8_t)(A - B)")
+    def i_psubw(self): return self.packed(8, "w", "(uint16_t)(A - B)")
+    def i_psubq(self): return self.packed(2, "q", "A - B")
+    def i_pcmpeqb(self): return self.packed(16, "b", "(A == B) ? 0xffu : 0u")
+    def i_pcmpeqw(self): return self.packed(8, "w", "(A == B) ? 0xffffu : 0u")
+    def i_pcmpeqd(self): return self.packed(4, "d", "(A == B) ? 0xffffffffu : 0u")
+    def i_pcmpgtb(self): return self.packed(16, "b", "((int8_t)A > (int8_t)B) ? 0xffu : 0u")
+    def i_pcmpgtw(self): return self.packed(8, "w", "((int16_t)A > (int16_t)B) ? 0xffffu : 0u")
+    def i_pcmpgtd(self): return self.packed(4, "d", "((int32_t)A > (int32_t)B) ? 0xffffffffu : 0u")
+    def i_pminub(self): return self.packed(16, "b", "A < B ? A : B")
+    def i_pmaxub(self): return self.packed(16, "b", "A > B ? A : B")
+    def i_divpd(self): return self.packed(2, "g", "A / B")
+    def i_divps(self): return self.packed(4, "f", "A / B")
+    def i_minps(self): return self.packed(4, "f", "minf_(A, B)")
+    def i_maxps(self): return self.packed(4, "f", "maxf_(A, B)")
+
+    def i_psllw(self): return self.pshift("w", 8, "<<")
+    def i_psrlw(self): return self.pshift("w", 8, ">>")
+
+    def i_psraw(self):
+        d, c = self.ops
+        dx = self.xmm(d)
+        cnt = f"{c.imm}u" if c.type == OP_IMM else f"(uint32_t){self.sread(c, 'q')}"
+        return [f"{{ uint64_t c_ = {cnt}; if (c_ > 15) c_ = 15; for (int k_ = 0; k_ < 8; k_++) "
+                f"XMM({dx}).w[k_] = (uint16_t)((int16_t)XMM({dx}).w[k_] >> c_); }}"]
+
+    def i_psrad(self):
+        d, c = self.ops
+        dx = self.xmm(d)
+        cnt = f"{c.imm}u" if c.type == OP_IMM else f"(uint32_t){self.sread(c, 'q')}"
+        return [f"{{ uint64_t c_ = {cnt}; if (c_ > 31) c_ = 31; for (int k_ = 0; k_ < 4; k_++) "
+                f"XMM({dx}).d[k_] = (uint32_t)((int32_t)XMM({dx}).d[k_] >> c_); }}"]
+
+    def i_pmuludq(self):
+        d, s = self.ops
+        dx = self.xmm(d)
+        return [f"{{ {self.vread(s)} XMM({dx}).q[0] = (uint64_t)XMM({dx}).d[0] * s_.d[0]; "
+                f"XMM({dx}).q[1] = (uint64_t)XMM({dx}).d[2] * s_.d[2]; }}"]
+
+    def unpack(self, kind, n, high):
+        """Interleave the low (or high) halves of dst and src lanes."""
+        d, s = self.ops
+        dx = self.xmm(d)
+        half = n // 2
+        base = half if high else 0
+        body = " ".join(f"r_.{kind}[{2 * i}] = XMM({dx}).{kind}[{base + i}]; r_.{kind}[{2 * i + 1}] = s_.{kind}[{base + i}];"
+                        for i in range(half))
+        return [f"{{ {self.vread(s)} XMM r_; {body} XMM({dx}) = r_; }}"]
+
+    def i_punpcklbw(self): return self.unpack("b", 16, False)
+    def i_punpckhbw(self): return self.unpack("b", 16, True)
+    def i_punpcklwd(self): return self.unpack("w", 8, False)
+    def i_punpckhwd(self): return self.unpack("w", 8, True)
+    def i_punpckhdq(self): return self.unpack("d", 4, True)
+    def i_punpcklqdq(self): return self.unpack("q", 2, False)
+    def i_punpckhqdq(self): return self.unpack("q", 2, True)
+    def i_unpcklpd(self): return self.unpack("q", 2, False)
+    def i_unpckhpd(self): return self.unpack("q", 2, True)
+    def i_unpcklps(self): return self.unpack("d", 4, False)
+    def i_unpckhps(self): return self.unpack("d", 4, True)
+
+    def i_packuswb(self):
+        d, s = self.ops
+        dx = self.xmm(d)
+        sat = "(uint8_t)((int16_t)V < 0 ? 0 : (int16_t)V > 255 ? 255 : (int16_t)V)"
+        body = " ".join(f"r_.b[{i}] = {sat.replace('V', f'XMM({dx}).w[{i}]')}; "
+                        f"r_.b[{i + 8}] = {sat.replace('V', f's_.w[{i}]')};" for i in range(8))
+        return [f"{{ {self.vread(s)} XMM r_; {body} XMM({dx}) = r_; }}"]
+
+    def i_packsswb(self):
+        d, s = self.ops
+        dx = self.xmm(d)
+        sat = "(uint8_t)(int8_t)((int16_t)V < -128 ? -128 : (int16_t)V > 127 ? 127 : (int16_t)V)"
+        body = " ".join(f"r_.b[{i}] = {sat.replace('V', f'XMM({dx}).w[{i}]')}; "
+                        f"r_.b[{i + 8}] = {sat.replace('V', f's_.w[{i}]')};" for i in range(8))
+        return [f"{{ {self.vread(s)} XMM r_; {body} XMM({dx}) = r_; }}"]
+
+    def i_pshuflw(self):
+        d, s, imm = self.ops
+        k = imm.imm
+        body = " ".join(f"r_.w[{i}] = s_.w[{(k >> (2 * i)) & 3}];" for i in range(4))
+        return [f"{{ {self.vread(s)} XMM r_ = s_; {body} XMM({self.xmm(d)}) = r_; }}"]
+
+    def i_pshufhw(self):
+        d, s, imm = self.ops
+        k = imm.imm
+        body = " ".join(f"r_.w[{4 + i}] = s_.w[{4 + ((k >> (2 * i)) & 3)}];" for i in range(4))
+        return [f"{{ {self.vread(s)} XMM r_ = s_; {body} XMM({self.xmm(d)}) = r_; }}"]
+
+    def i_shufps(self):
+        d, s, imm = self.ops
+        dx = self.xmm(d)
+        k = imm.imm
+        return [f"{{ {self.vread(s)} XMM r_; r_.d[0] = XMM({dx}).d[{k & 3}]; r_.d[1] = XMM({dx}).d[{(k >> 2) & 3}]; "
+                f"r_.d[2] = s_.d[{(k >> 4) & 3}]; r_.d[3] = s_.d[{(k >> 6) & 3}]; XMM({dx}) = r_; }}"]
+
+    def i_shufpd(self):
+        d, s, imm = self.ops
+        dx = self.xmm(d)
+        k = imm.imm
+        return [f"{{ {self.vread(s)} XMM r_; r_.q[0] = XMM({dx}).q[{k & 1}]; r_.q[1] = s_.q[{(k >> 1) & 1}]; "
+                f"XMM({dx}) = r_; }}"]
+
+    def i_movddup(self):
+        d, s = self.ops
+        dx = self.xmm(d)
+        return [f"{{ uint64_t v_ = {self.sread(s, 'q')}; XMM({dx}).q[0] = v_; XMM({dx}).q[1] = v_; }}"]
+
+    def i_movmskps(self):
+        d, s = self.ops
+        sx = self.xmm(s)
+        return [self.wr(d, " | ".join(f"((XMM({sx}).d[{i}] >> 31) << {i})" for i in range(4)))]
+
+    def i_movmskpd(self):
+        d, s = self.ops
+        sx = self.xmm(s)
+        return [self.wr(d, f"(uint32_t)((XMM({sx}).q[0] >> 63) | ((XMM({sx}).q[1] >> 63) << 1))")]
+
+    def i_pmovmskb(self):
+        d, s = self.ops
+        sx = self.xmm(s)
+        return [self.wr(d, " | ".join(f"((uint32_t)(XMM({sx}).b[{i}] >> 7) << {i})" for i in range(16)))]
+
+    def i_pinsrw(self):
+        d, s, imm = self.ops
+        return [f"XMM({self.xmm(d)}).w[{imm.imm & 7}] = (uint16_t){self.rd(s, 16)};"]
+
+    def i_pextrw(self):
+        d, s, imm = self.ops
+        return [self.wr(d, f"XMM({self.xmm(s)}).w[{imm.imm & 7}]")]
 
     def i_punpckldq(self):
         d, s = self.ops

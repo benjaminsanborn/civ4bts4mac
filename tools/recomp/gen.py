@@ -42,12 +42,14 @@ def main() -> None:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--roots", default="")
     ap.add_argument("--module", action="append", default=[], help="guest module prefix (from link.py)")
+    ap.add_argument("--overrides", default="", help="directory of host sources declaring OVERRIDE(symbol)")
     ap.add_argument("--per-file", type=int, default=400)
     ap.add_argument("-j", type=int, default=os.cpu_count())
     args = ap.parse_args()
 
     world = World(args.binary, args.module)
     prog = Program(world)
+    overrides = find_overrides(args.overrides, world) if args.overrides else {}
     roots = list(prog.starts) if args.all else [int(x, 16) for x in args.roots.split(",") if x]
     done: Dict[int, str] = {}
     unsupported = collections.Counter()
@@ -57,6 +59,10 @@ def main() -> None:
         while pending:
             batch = sorted(pending)
             pending = set()
+            for e in [b for b in batch if b in overrides]:
+                done[e] = (f"void ov_{overrides[e]}(CPU *cpu);\n"
+                           f"void f_{e:08x}(CPU *cpu) {{ ov_{overrides[e]}(cpu); cpu->r[4] += 4; /* host override */ }}\n")
+            batch = [b for b in batch if b not in overrides]
             for i, (entry, c, calls, unsup) in enumerate(pool.imap_unordered(_lift, batch, chunksize=64)):
                 done[entry] = c
                 if unsup:
@@ -140,6 +146,23 @@ def main() -> None:
     print(f"lifted {total} functions into {nfiles} files; {unsupported_fns} contain unsupported instructions")
     for k, v in unsupported.most_common(40):
         print(f"  {v:7d} {k}")
+
+
+def find_overrides(src_dir: str, world: World) -> Dict[int, str]:
+    """Guest functions replaced by host code: OVERRIDE(symbol) in runtime sources."""
+    import re
+    out = {}
+    by_name = dict(world.guest_syms)
+    for a, n in world.functions():
+        by_name.setdefault(n, a)
+    for f in sorted(os.listdir(src_dir)):
+        if not f.endswith(".c"):
+            continue
+        for name in re.findall(r"^OVERRIDE\((\w+)\)", open(os.path.join(src_dir, f)).read(), re.M):
+            if name not in by_name:
+                raise SystemExit(f"override for unknown guest symbol {name} ({f})")
+            out[by_name[name]] = name
+    return out
 
 
 def _write_if_changed(path: str, text: str) -> None:

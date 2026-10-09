@@ -200,10 +200,14 @@ def main():
     ap.add_argument("--fn", default="")
     ap.add_argument("-v", action="store_true")
     ap.add_argument("--module", action="append", default=[])
+    ap.add_argument("--range", default="", help="sample only functions in LO-HI (hex)")
     args = ap.parse_args()
 
     img = Image(args.binary, args.module)
     funcs = [a for a, _ in img.functions]
+    if args.range:
+        lo, hi = (int(x, 16) for x in args.range.split("-"))
+        funcs = [a for a in funcs if lo <= a < hi]
     names = dict(img.functions)
     rng = random.Random(args.seed)
     picks = [int(x, 16) for x in args.fn.split(",") if x] or rng.sample(funcs, args.n)
