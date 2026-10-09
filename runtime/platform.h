@@ -19,11 +19,13 @@ typedef struct HWindow {
     void *view; /* content NSView */
     WinProp *props;
     int nprops;
+    int mode_w, mode_h; /* nonzero for a display port: logical (rendered) size */
 } HWindow;
 
 HWindow *win_of(uint32_t g);
 uint32_t win_event_target(uint32_t window);
 uint32_t plat_mouse_buttons(void);
 void plat_mouse_global(int16_t *v, int16_t *h);
+void plat_display_mode(int *w, int *h); /* current virtual display mode (agl.m) */
 
 #endif

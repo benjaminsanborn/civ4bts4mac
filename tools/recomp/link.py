@@ -352,6 +352,12 @@ def link(name: str, objs: List[ObjFile], base: int, external: Dict[str, int]) ->
             if s.sectname == "__eh_frame":
                 mod.eh_frames.append((s.new_addr, s.size))
 
+    # ---- unrelocated pc-relative fields in __eh_frame ----
+    for o in objs:
+        for si, sec in enumerate(o.sections):
+            if sec.sectname == "__eh_frame":
+                _fix_eh_frame(mod, o, sec)
+
     # ---- exported metadata ----
     mod.symbols = {n: a for n, a in defs.items() if n not in external}
     funcs = {}
@@ -366,6 +372,82 @@ def link(name: str, objs: List[ObjFile], base: int, external: Dict[str, int]) ->
     if text_lo is not None:
         mod.text_ranges = [(text_lo, text_hi)]
     return mod
+
+
+def _fix_eh_frame(mod: GuestModule, o: "ObjFile", sec: "ObjSection") -> None:
+    """clang emits __eh_frame pc-relative fields (FDE pc_begin, LSDA and
+    personality pointers) without relocations, assuming the object's section
+    layout. Re-point them for the linked layout."""
+    from ehframe import sleb, uleb
+
+    data = o.contents(sec)
+    delta_of = [0] + [s.new_addr - s.addr for s in o.sections]
+    # Fields that do have a relocation were already fixed by the relocation pass.
+    relocated = set()
+    for k in range(sec.nreloc):
+        w0 = struct.unpack_from("<I", o.data, sec.reloff + 8 * k)[0]
+        relocated.add((w0 & 0xFFFFFF) if w0 & 0x80000000 else w0)
+    fix_delta = sec.new_addr - sec.addr
+
+    def repoint(off: int, enc: int) -> int:
+        """Rewrite the encoded pointer at section offset `off`; returns its size."""
+        if enc == 0xFF:
+            return 0
+        fmt = enc & 0x0F
+        if fmt not in (0x00, 0x03, 0x0B):
+            raise ValueError(f"{o.path}: eh_frame pointer format {enc:#x}")
+        if (enc & 0x70) == 0x10 and off not in relocated:  # pcrel, no relocation
+            v = struct.unpack_from("<i", data, off)[0]
+            field_old = sec.addr + off
+            target_old = (field_old + v) & 0xFFFFFFFF
+            i = o.section_of(target_old)
+            if i is not None:
+                new_v = (target_old + delta_of[i]) - (field_old + fix_delta)
+                struct.pack_into("<i", mod.image, sec.new_addr + off - mod.base, new_v)
+        return 4
+
+    cies = {}
+    p = 0
+    while p + 4 <= len(data):
+        length = struct.unpack_from("<I", data, p)[0]
+        if length == 0:
+            break
+        rec = p + 4
+        nxt = rec + length
+        cid = struct.unpack_from("<I", data, rec)[0]
+        if cid == 0:
+            q = rec + 5
+            end = data.index(b"\0", q)
+            aug = data[q:end].decode("latin-1")
+            q = end + 1
+            _, q = uleb(data, q)
+            _, q = sleb(data, q)
+            q += 1
+            fde_enc, lsda_enc = 0, 0xFF
+            if aug.startswith("z"):
+                _, q = uleb(data, q)
+                for c in aug[1:]:
+                    if c == "R":
+                        fde_enc = data[q]
+                        q += 1
+                    elif c == "L":
+                        lsda_enc = data[q]
+                        q += 1
+                    elif c == "P":
+                        penc = data[q]
+                        q += 1
+                        q += repoint(q, penc)
+            cies[p] = (fde_enc, lsda_enc, aug.startswith("z"))
+        else:
+            fde_enc, lsda_enc, has_z = cies.get(rec - cid, (0, 0xFF, False))
+            q = rec + 4
+            q += repoint(q, fde_enc)  # pc_begin
+            q += 4                    # pc_range (absolute)
+            if has_z:
+                _, q = uleb(data, q)
+                if lsda_enc != 0xFF:
+                    repoint(q, lsda_enc)
+        p = nxt
 
 
 def _get(mod: GuestModule, addr: int, length: int) -> int:

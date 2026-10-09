@@ -3,6 +3,10 @@
 
 #include "rt.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Generated tables (functab.c). See tools/recomp/world.py for the layout. */
 typedef struct {
     uint32_t addr;
@@ -31,5 +35,11 @@ extern const uint32_t g_init_count;
 extern const HostData g_hostdata[];
 extern const uint32_t g_hostdata_count;
 extern const uint32_t g_main;
+extern const uint32_t g_eh_frames[][2]; /* guest __eh_frame sections: {addr, size} */
+extern const uint32_t g_eh_frame_count;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

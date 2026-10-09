@@ -60,7 +60,9 @@ static void fsref_set(uint32_t g, const char *path) {
     W32_(g_mem, g + 4, path_id(path));
 }
 
-static const char *fsref_path(uint32_t g) {
+const char *rt_fsref_path(uint32_t g);
+static const char *fsref_path(uint32_t g) { return rt_fsref_path(g); }
+const char *rt_fsref_path(uint32_t g) {
     if (R32_(g_mem, g) != FSREF_TAG) rt_fatal("bad guest FSRef %08x", g);
     return g_paths[R32_(g_mem, g + 4)];
 }
@@ -171,7 +173,11 @@ SHIM(_FSRefMakePath) {
 SHIM(_FSPathMakeRef) {
     struct stat s;
     const char *p = CPTR(ARG(0));
-    if (stat(p, &s)) { RET(fnfErr); return; }
+    if (stat(p, &s)) {
+        if (getenv("CIV4_DEBUG_FILES")) fprintf(stderr, "[files] FSPathMakeRef miss: %s\n", p);
+        RET(fnfErr);
+        return;
+    }
     char real[PATH_MAX];
     fsref_set(ARG(1), realpath(p, real) ? real : p);
     if (ARG(2)) W8_(g_mem, ARG(2), S_ISDIR(s.st_mode));

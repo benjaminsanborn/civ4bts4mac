@@ -378,7 +378,7 @@ static void load_world(const char *path) {
 }
 
 extern const ShimDef shims_libc[], shims_stdio[], shims_pthread[], shims_cf[], shims_files[], shims_posix[], shims_carbon[], shims_dyld[], shims_events[],
-    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[];
+    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[], shims_movies[], shims_unwind[];
 
 static void register_all_shims(void) {
     rt_register_shims(shims_libc);
@@ -398,6 +398,8 @@ static void register_all_shims(void) {
     rt_register_shims(shims_cf_xml);
     rt_register_shims(shims_iokit);
     rt_register_shims(shims_quickdraw);
+    rt_register_shims(shims_movies);
+    rt_register_shims(shims_unwind);
     uint32_t have = 0;
     for (uint32_t i = 0; i < g_import_count; i++) have += g_import_shims[i] != NULL;
     rt_log("%u/%u host imports implemented", have, g_import_count);
@@ -417,6 +419,12 @@ int main(int argc, char **argv) {
         strlcpy(g_build_dir, real, sizeof g_build_dir);
     }
     char pbuf[PATH_MAX];
+    /* Debug output directories are relative to where we were started (the game chdirs). */
+    if (getenv("CIV4_FRAMES") && getenv("CIV4_FRAMES")[0] != '/') {
+        char cwd[PATH_MAX], abs[PATH_MAX];
+        snprintf(abs, sizeof abs, "%s/%s", getcwd(cwd, sizeof cwd), getenv("CIV4_FRAMES"));
+        setenv("CIV4_FRAMES", abs, 1);
+    }
     /* The guest's Python standard library (the old system Python 2.6 is gone). */
     if (!getenv("PYTHONHOME")) setenv("PYTHONHOME", rt_build_path("pylib", pbuf, sizeof pbuf), 1);
     if (!getenv("CIV4_APP")) {

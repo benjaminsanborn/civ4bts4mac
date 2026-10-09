@@ -9,10 +9,14 @@ for f in runtime/*.c; do
     o="build/rt/$(basename "$f" .c).o"
     [ "$o" -nt "$f" ] && [ "$o" -nt runtime/shim.h ] || clang -c $CFLAGS "$f" -o "$o"
 done
+for f in runtime/*.cpp; do
+    o="build/rt/$(basename "$f" .cpp).o"
+    [ "$o" -nt "$f" ] && [ "$o" -nt runtime/shim.h ] || clang++ -std=gnu++17 -c $CFLAGS "$f" -o "$o"
+done
 for f in runtime/*.m; do
     o="build/rt/$(basename "$f" .m).o"
     [ "$o" -nt "$f" ] && [ "$o" -nt runtime/shim.h ] || clang -c $CFLAGS -fobjc-arc "$f" -o "$o"
 done
-clang -O2 -g build/rt/*.o build/libgame.a -framework CoreFoundation -framework Cocoa -framework OpenGL \
-    -framework CoreGraphics -framework CoreText -Wl,-export_dynamic -o build/civ4
+clang++ -O2 -g build/rt/*.o build/libgame.a -framework CoreFoundation -framework Cocoa -framework OpenGL \
+    -framework CoreGraphics -framework CoreText -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -framework ImageIO -Wl,-export_dynamic -o build/civ4
 echo "linked build/civ4"

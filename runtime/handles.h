@@ -3,6 +3,10 @@
 
 #include "shim.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Tags for opaque guest handles. */
 #define TAG_EVENT 0x45564e54u   /* 'EVNT' */
 #define TAG_TARGET 0x54475420u  /* 'TGT ' */
@@ -18,5 +22,9 @@
 uint32_t gh_new(uint32_t tag, void *host);
 void *gh_get(uint32_t g, uint32_t tag); /* NULL if g is 0 or not a handle of this tag */
 void gh_free(uint32_t g);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

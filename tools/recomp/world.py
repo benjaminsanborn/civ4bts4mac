@@ -108,17 +108,51 @@ class World:
         return r
 
     def functions(self) -> List[Tuple[int, str]]:
-        f = {s.value: s.name for s in self.game.functions()}
-        for m in self.modules:
-            for a, n in m.functions:
-                f.setdefault(a, n)
-        return sorted(f.items())
+        if getattr(self, "_functions", None) is None:
+            f = {s.value: s.name for s in self.game.functions()}
+            for m in self.modules:
+                for a, n in m.functions:
+                    f.setdefault(a, n)
+            # Functions known only from their unwind info (no symbol).
+            for a in self.landing_pads():
+                f.setdefault(a, f"fde_{a:08x}")
+            self._functions = sorted(f.items())
+        return self._functions
 
     def read(self, addr: int, size: int) -> bytes:
         for m in self.modules:
             if m.base <= addr < m.base + len(m.image):
                 return m.read(addr, size)
         return self.game.read(addr, size)
+
+    # ---- exceptions ----
+    def eh_frames(self) -> List[Tuple[int, int]]:
+        out = []
+        sec = self.game.section("__TEXT", "__eh_frame")
+        if sec:
+            out.append((sec.addr, sec.size))
+        for m in self.modules:
+            out.extend(m.eh_frames)
+        return out
+
+    def landing_pads(self) -> Dict[int, set]:
+        """Function start (FDE pc_begin) -> landing pad addresses."""
+        if getattr(self, "_pads", None) is not None:
+            return self._pads
+        from ehframe import Reader, landing_pads, parse_eh_frame
+        r = Reader(self.read)
+        out = {}
+        for base, size in self.eh_frames():
+            for fde in parse_eh_frame(r, base, size):
+                try:
+                    pads = landing_pads(r, fde)
+                except (KeyError, IndexError, struct.error):
+                    # Known issue: some LSDA pointers in linked guest modules are mis-relocated.
+                    continue
+                if pads:
+                    out.setdefault(fde.pc_begin, set()).update(pads)
+        self._pads = out
+        return out
 
     # ---- initial memory image ----
     def regions(self) -> List[Tuple[int, bytes, int]]:

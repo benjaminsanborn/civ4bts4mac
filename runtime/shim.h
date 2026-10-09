@@ -15,6 +15,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct {
     const char *name; /* Mach-O symbol name, with leading underscore */
     GuestFn fn;
@@ -67,5 +71,9 @@ uint32_t rt_lookup_symbol(const char *name);
 const char *rt_build_path(const char *rel, char *buf, size_t n);
 _Noreturn void rt_fatal(const char *fmt, ...);
 void rt_log(const char *fmt, ...);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

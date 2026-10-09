@@ -83,7 +83,7 @@ def main() -> None:
     for k in range(0, len(entries), args.per_file):
         chunk = entries[k:k + args.per_file]
         name = f"part_{k // args.per_file:04d}.c"
-        parts = ['#include "rt.h"\n']
+        parts = ['#include "rt.h"\n', 'extern "C" {\n']
         refs = set()
         for e in chunk:
             refs.update(int(x[2:10], 16) for x in _refs(done[e]))
@@ -91,6 +91,7 @@ def main() -> None:
             parts.append(f"void f_{r:08x}(CPU *cpu);\n")
         for e in chunk:
             parts.append("\n" + done[e])
+        parts.append("}\n")
         _write_if_changed(os.path.join(args.outdir, name), "".join(parts))
         written.add(name)
         nfiles += 1
@@ -132,6 +133,9 @@ def main() -> None:
         out.write("};\n")
         out.write(f"const uint32_t g_hostdata_count = {len(world.hostdata)};\n")
         out.write(f"const uint32_t g_main = 0x{world.guest_syms['_main']:x}u;\n")
+        ehf = world.eh_frames()
+        out.write("const uint32_t g_eh_frames[][2] = {\n" + "".join(f"    {{0x{a:x}u, {n}u}},\n" for a, n in ehf) + "};\n")
+        out.write(f"const uint32_t g_eh_frame_count = {len(ehf)};\n")
         _write_if_changed(os.path.join(args.outdir, "functab.c"), out.getvalue())
     world.save_image(os.path.join(args.outdir, "world.img"))
     with open(os.path.join(args.outdir, "symbols.txt"), "w") as out:

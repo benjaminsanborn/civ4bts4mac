@@ -83,6 +83,7 @@ class Program:
                 self.stub_import[addr] = v
         self.import_names = world.import_names
         self.import_id = world.import_id
+        self.pads = world.landing_pads()
 
     # ---- address helpers ----
     def in_text(self, a: int) -> bool:
@@ -147,6 +148,11 @@ class Func:
     # ---- discovery ----
     def discover(self) -> None:
         work = [self.entry]
+        # Exception landing pads are only reached by the unwinder: extra roots.
+        self.pads = sorted(p for p in self.p.pads.get(self.entry, ()) if self.entry <= p < self.end)
+        for p in self.pads:
+            work.append(p)
+            self.labels.add(p)
         while work:
             a = work.pop()
             while a not in self.insns:
@@ -250,7 +256,22 @@ class Func:
         op = insn.operands[0]
         if op.type == OP_REG:
             return self.relative_jump_table(insn)
-        if op.type != OP_MEM or op.mem.scale != 4 or op.mem.base != 0 or op.mem.index == 0:
+        if op.type != OP_MEM:
+            return []
+        scaled = op.mem.scale == 4 and op.mem.base == 0 and op.mem.index != 0
+        # Pre-scaled index: shl R, 2; jmp [R + table]  (GCC, switch on a 64-bit value)
+        prescaled = False
+        if not scaled and op.mem.index == 0 and op.mem.base != 0:
+            r = insn.reg_name(op.mem.base)
+            for pi in self.straight_line_before(insn.address, 3):
+                if pi.operands and pi.operands[0].type == OP_REG and pi.reg_name(pi.operands[0].reg) == r:
+                    src = pi.operands[1] if len(pi.operands) > 1 else None
+                    if pi.mnemonic in ("shl", "sal") and src is not None and src.type == OP_IMM and src.imm == 2:
+                        prescaled = True
+                    elif pi.mnemonic == "lea" and src.mem.scale == 4 and src.mem.base == 0 and src.mem.disp == 0:
+                        prescaled = True  # lea R, [I*4]
+                    break
+        if not (scaled or prescaled):
             return []
         base = op.mem.disp & 0xffffffff
         count = self.switch_bound(insn)
@@ -375,6 +396,8 @@ class Func:
     # ---- emission ----
     def lift(self) -> str:
         self.discover()
+        # Pads that don't decode to instructions (bogus LSDA data) are dropped.
+        self.pads = [p for p in self.pads if p in self.insns]
         live = self.liveness()
         addrs = sorted(self.insns)
         body: List[str] = []
@@ -401,8 +424,23 @@ class Func:
                     body.append(f'    rt_unimpl(cpu, 0x{nxt:x}u, "fell off function end");')
         # Labels can be added late (fallthrough gotos); re-emit them.
         out = [f"void f_{self.entry:08x}(CPU *cpu) {{", "    PROLOGUE;"]
+        if self.pads:
+            # The runtime unwinder throws GuestUnwind{target, esp0} to install a
+            # landing pad in this invocation (identified by its entry esp).
+            cases = " ".join(f"case 0x{p:x}u: goto L_{p:x};" for p in self.pads)
+            out += ["    const uint32_t esp0_ = esp;", "    uint32_t lp_ = 0;", "rt_retry_:;", "    try {",
+                    f"    switch (lp_) {{ {cases} default: break; }}"]
         for line in body:
             out.append(line)
+        if self.pads:
+            cases = " ".join(f"case 0x{p:x}u:" for p in self.pads)
+            out += ["    } catch (GuestUnwind &u_) {",
+                    f"        if (u_.esp0 != esp0_) throw;",
+                    f"        switch (u_.target) {{ {cases} break; default: throw; }}",
+                    "        lp_ = u_.target;",
+                    "        RELOAD;",
+                    "        goto rt_retry_;",
+                    "    }"]
         text = "\n".join(out)
         for a in self.labels:
             if f"L_{a:x}:;" not in text and a in self.insns:

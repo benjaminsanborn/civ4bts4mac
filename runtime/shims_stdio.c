@@ -205,6 +205,7 @@ static size_t gformat(WOut *o, uint32_t fmt, int wide, uint32_t va) {
             else if (m == 'z' || m == 'j' || m == 't') { i++; }
             else break;
         }
+        spec[sn] = 0;
         wchar_t conv = FCH(i++);
         char tmp[512];
         int n = 0;

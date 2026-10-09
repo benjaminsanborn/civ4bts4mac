@@ -12,6 +12,10 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef union {
     uint8_t b[16];
     uint16_t w[8];
@@ -138,5 +142,16 @@ static inline float minf_(float a, float b) { return a < b ? a : b; }
 static inline float maxf_(float a, float b) { return a > b ? a : b; }
 static inline double mind_(double a, double b) { return a < b ? a : b; }
 static inline double maxd_(double a, double b) { return a > b ? a : b; }
+
+#ifdef __cplusplus
+} /* extern "C" */
+
+/* Thrown by the runtime unwinder to install a guest landing pad: the lifted
+ * function whose invocation has entry esp `esp0` resumes at `target`. */
+struct GuestUnwind {
+    uint32_t target;
+    uint32_t esp0;
+};
+#endif
 
 #endif

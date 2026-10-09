@@ -106,11 +106,20 @@ static void add_mouse_params(HEvent *e, NSEvent *ev, HWindow *w) {
     float global[2] = {(float)p.x, (float)(main_screen_height() - p.y)};
     g_mouse_global = NSMakePoint(global[0], global[1]);
     ev_set_param(e, kEventParamMouseLocation, typeHIPoint, global, 8);
+    if (w && w->mode_w) {
+        /* Display port: the game sees a screen of mode size at the origin. */
+        NSRect sf = [[NSScreen screens][0] frame];
+        global[0] = (float)((p.x - sf.origin.x) * w->mode_w / sf.size.width);
+        global[1] = (float)((NSMaxY(sf) - p.y) * w->mode_h / sf.size.height);
+        ev_set_param(e, kEventParamMouseLocation, typeHIPoint, global, 8);
+        g_mouse_global = NSMakePoint(global[0], global[1]);
+    }
     if (w) {
         NSRect content = [(__bridge NSWindow *)w->ns contentRectForFrameRect:[(__bridge NSWindow *)w->ns frame]];
         int16_t qd[4];
         cocoa_to_qd(content, qd);
         float local[2] = {global[0] - qd[1], global[1] - qd[0]};
+        if (w->mode_w) local[0] = global[0], local[1] = global[1];
         ev_set_param(e, kEventParamWindowMouseLocation, typeHIPoint, local, 8);
         ev_set_param(e, kEventParamWindowRef, typeWindowRef, &w->g, 4);
     }
@@ -220,6 +229,11 @@ void plat_pump(double timeout) {
 
 uint32_t plat_mouse_buttons(void) { return g_buttons; }
 void plat_window_content_size(HWindow *w, int *width, int *height) {
+    if (w->mode_w) {
+        *width = w->mode_w;
+        *height = w->mode_h;
+        return;
+    }
     NSRect b = [(__bridge NSView *)w->view bounds];
     *width = (int)b.size.width;
     *height = (int)b.size.height;
@@ -303,6 +317,42 @@ SHIM(_CreateNewWindow) {
     rt_log("CreateNewWindow class %u attrs %08x bounds %d,%d %dx%d", w->wclass, w->attrs, left, top, right - left,
            bottom - top);
     RET(noErr);
+}
+
+/* Fullscreen: a borderless window over the main screen, standing in for the
+ * captured display. Its logical size is the current virtual display mode. */
+SHIM(_CreateNewPortForCGDisplayID) {
+    ensure_app();
+    static HWindow *display_port;
+    if (!display_port) {
+        HWindow *w = calloc(1, sizeof *w);
+        NSScreen *screen = [NSScreen screens][0];
+        GameWindow *nw = [[GameWindow alloc] initWithContentRect:[screen frame]
+                                                       styleMask:NSWindowStyleMaskBorderless
+                                                         backing:NSBackingStoreBuffered
+                                                           defer:NO];
+        [nw setLevel:NSMainMenuWindowLevel + 1];
+        [nw setReleasedWhenClosed:NO];
+        [nw setAcceptsMouseMovedEvents:YES];
+        [nw setBackgroundColor:[NSColor blackColor]];
+        GameView *view = [[GameView alloc] initWithFrame:[[nw contentView] bounds]];
+        [view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [nw setContentView:view];
+        [nw makeFirstResponder:view];
+        w->ns = (__bridge_retained void *)nw;
+        w->view = (__bridge void *)view;
+        w->target = ev_new_target(ev_app_target());
+        w->g = gh_new(TAG_WINDOW, w);
+        w->port = gh_new(TAG_PORT, w);
+        w->visible = 1;
+        [g_windows addObject:[NSValue valueWithPointer:w]];
+        display_port = w;
+        [nw makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+    }
+    plat_display_mode(&display_port->mode_w, &display_port->mode_h);
+    rt_log("CreateNewPortForCGDisplayID: fullscreen %dx%d", display_port->mode_w, display_port->mode_h);
+    RET(display_port->port);
 }
 
 SHIM(_DisposeWindow) {
@@ -502,7 +552,7 @@ SHIM(_IsMenuBarVisible) { RET([NSMenu menuBarVisible]); }
 SHIM(_GetMBarHeight) { RET(24); }
 
 const ShimDef shims_platform[] = {
-    SHIM_ENTRY(_CreateNewWindow), SHIM_ENTRY(_DisposeWindow), SHIM_ENTRY(_ShowWindow), SHIM_ENTRY(_HideWindow),
+    SHIM_ENTRY(_CreateNewWindow), SHIM_ENTRY(_CreateNewPortForCGDisplayID), SHIM_ENTRY(_DisposeWindow), SHIM_ENTRY(_ShowWindow), SHIM_ENTRY(_HideWindow),
     SHIM_ENTRY(_SelectWindow), SHIM_ENTRY(_ActivateWindow), SHIM_ENTRY(_IsWindowVisible),
     SHIM_ENTRY(_IsWindowCollapsed), SHIM_ENTRY(_FrontWindow), SHIM_ENTRY(_GetNextWindow), SHIM_ENTRY(_GetWindowBounds),
     SHIM_ENTRY(_SetWindowBounds), SHIM_ENTRY(_RepositionWindow), SHIM_ENTRY(_GetWindowRegion),

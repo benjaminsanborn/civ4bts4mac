@@ -7,6 +7,8 @@
 
 #include <pthread.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
@@ -76,7 +78,16 @@ static uint32_t guest_info(CFXMLNodeRef node) {
 
 SHIM(_CFXMLTreeCreateFromData) {
     /* (allocator, xmlData, dataSource, parseOptions, versionOfNodes) */
-    RETCF_OWNED(CFXMLTreeCreateFromData(NULL, CFI(1), CFI(2), ARG(3), (CFIndex)(int32_t)ARG(4)));
+    CFXMLTreeRef t = CFXMLTreeCreateFromData(NULL, CFI(1), CFI(2), ARG(3), (CFIndex)(int32_t)ARG(4));
+    if (getenv("CIV4_DEBUG_XML")) {
+        CFDataRef d = CFI(1);
+        CFIndex n = d ? CFDataGetLength(d) : -1;
+        char head[64] = {0};
+        if (n > 0) memcpy(head, CFDataGetBytePtr(d), n < 63 ? n : 63);
+        for (char *c = head; *c; c++) if (*c < 32) *c = ' ';
+        fprintf(stderr, "[xml] CreateFromData len %ld opts %x -> %p  \"%s\"\n", (long)n, ARG(3), (void *)t, head);
+    }
+    RETCF_OWNED(t);
 }
 SHIM(_CFXMLTreeCreateWithDataFromURL) {
     RETCF_OWNED(CFXMLTreeCreateWithDataFromURL(NULL, CFI(1), ARG(2), (CFIndex)(int32_t)ARG(3)));

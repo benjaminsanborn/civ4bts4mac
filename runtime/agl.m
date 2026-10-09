@@ -8,6 +8,8 @@
 #import <Cocoa/Cocoa.h>
 #import <OpenGL/OpenGL.h>
 #import <OpenGL/gl.h>
+#import <QuartzCore/QuartzCore.h>
+#include <sys/stat.h>
 
 #include "cf.h"
 #include "handles.h"
@@ -157,13 +159,79 @@ SHIM(_aglSetDrawable) {
         HWindow *w = gh_get(ARG(1), TAG_PORT);
         if (!w) rt_fatal("aglSetDrawable: not a window port %08x", ARG(1));
         [c->ctx setView:(__bridge NSView *)w->view];
+        if (w->mode_w) {
+            /* Display port: render at the game's mode size; the system scales it up. */
+            GLint size[2] = {w->mode_w, w->mode_h};
+            CGLSetParameter([c->ctx CGLContextObj], kCGLCPSurfaceBackingSize, size);
+            CGLEnable([c->ctx CGLContextObj], kCGLCESurfaceBackingSize);
+        }
         [c->ctx update];
     }
     RET(1);
 }
 SHIM(_aglGetDrawable) { HCtx *c = ctx_of(ARG(0)); RET(c ? c->port : 0); }
 SHIM(_aglUpdateContext) { HCtx *c = ctx_of(ARG(0)); if (c) [c->ctx update]; RET(1); }
-SHIM(_aglSwapBuffers) { HCtx *c = ctx_of(ARG(0)); if (c) [c->ctx flushBuffer]; }
+/* CIV4_FRAMES=dir: save the game's back buffer as PNG every couple of seconds
+ * (inspection without screen capture). */
+#import <ImageIO/ImageIO.h>
+static void maybe_capture_frame(void) {
+    static const char *dir;
+    static int checked;
+    static double last;
+    if (!checked) { checked = 1; dir = getenv("CIV4_FRAMES"); if (dir) mkdir(dir, 0755); }
+    if (!dir) return;
+    double now = CACurrentMediaTime();
+    if (now - last < 2.0) return;
+    last = now;
+    GLint vp[4];
+    glGetIntegerv(GL_VIEWPORT, vp);
+    GLint w = 0, h = 0;
+    CGLContextObj cgl = CGLGetCurrentContext();
+    GLint size[2] = {0, 0};
+    if (cgl && CGLIsEnabled(cgl, kCGLCESurfaceBackingSize, &w) == 0 && w) {
+        CGLGetParameter(cgl, kCGLCPSurfaceBackingSize, size);
+    }
+    w = size[0] ? size[0] : vp[2];
+    h = size[1] ? size[1] : vp[3];
+    if (w <= 0 || h <= 0) return;
+    uint8_t *px = malloc((size_t)w * (size_t)h * 4);
+    glReadBuffer(GL_BACK);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    /* Flip vertically: GL rows are bottom-up. */
+    for (GLint y = 0; y < h / 2; y++) {
+        uint8_t tmp[16384];
+        uint8_t *a = px + (size_t)y * w * 4, *b = px + (size_t)(h - 1 - y) * w * 4;
+        for (GLint off = 0; off < w * 4; off += (GLint)sizeof tmp) {
+            size_t n = (size_t)MIN((GLint)sizeof tmp, w * 4 - off);
+            memcpy(tmp, a + off, n); memcpy(a + off, b + off, n); memcpy(b + off, tmp, n);
+        }
+    }
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef bc = CGBitmapContextCreate(px, (size_t)w, (size_t)h, 8, (size_t)w * 4, cs, kCGImageAlphaNoneSkipLast);
+    CGImageRef img = CGBitmapContextCreateImage(bc);
+    char path[1024];
+    snprintf(path, sizeof path, "%s/frame_%06.1f.png", dir, now);
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+    CGImageDestinationRef dst = url && img ? CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, NULL) : NULL;
+    if (dst) {
+        CGImageDestinationAddImage(dst, img, NULL);
+        CGImageDestinationFinalize(dst);
+        CFRelease(dst);
+    }
+    if (url) CFRelease(url);
+    if (img) CGImageRelease(img);
+    CGContextRelease(bc);
+    CGColorSpaceRelease(cs);
+    free(px);
+}
+
+SHIM(_aglSwapBuffers) {
+    HCtx *c = ctx_of(ARG(0));
+    if (!c) return;
+    maybe_capture_frame();
+    [c->ctx flushBuffer];
+}
 SHIM(_aglSetInteger) {
     /* AGL context parameter numbers match CGL's (swap interval 222, backing size 304, ...). */
     HCtx *c = ctx_of(ARG(0));
@@ -340,6 +408,13 @@ static CFDictionaryRef make_mode(int w, int h) {
     CFDictionaryRef d = CFDictionaryCreate(NULL, k, v, 8, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFRelease(nw); CFRelease(nh); CFRelease(nb); CFRelease(nm); CFRelease(nr); CFRelease(nbps); CFRelease(nspp);
     return d;
+}
+
+static void ensure_modes(void);
+void plat_display_mode(int *w, int *h) {
+    ensure_modes();
+    *w = g_mode_w;
+    *h = g_mode_h;
 }
 
 static CFArrayRef g_modes;
