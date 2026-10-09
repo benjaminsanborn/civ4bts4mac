@@ -6,6 +6,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 GAME=${1:-"$ROOT/build/game/Beyond the Sword/Civilization IV Beyond the Sword.app/Contents/MacOS/Civilization IV Beyond the Sword"}
 PY="$ROOT/.venv/bin/python"
 cd "$ROOT"
+tools/fetch_third_party.sh
 echo "== guest libraries"
 guest/build_libstdcxx.sh
 guest/build_python.sh
