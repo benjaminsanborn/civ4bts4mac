@@ -17,7 +17,7 @@ import unicorn as U
 from unicorn import x86_const as UX
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "recomp"))
-from macho import MachO  # noqa: E402
+from world import IMPORT_BASE, World  # noqa: E402
 
 PAGE = 0x4000  # host page size on Apple Silicon; map identically on both sides
 SCRATCH, SCRATCH_SIZE = 0x40000000, 0x100000
@@ -39,50 +39,36 @@ def align_up(a):
 
 
 class Image:
-    """The guest memory image shared by both sides."""
+    """The guest memory image shared by both sides: the linked world (game with
+    binds applied, host data cells, guest modules)."""
 
-    def __init__(self, path):
-        m = MachO(path)
-        self.m = m
-        # One contiguous image; a page shared by two segments gets the more
-        # permissive protection. Regions are runs of equal protection.
-        segs = [g for g in m.segments if g.segname not in ("__PAGEZERO", "__LINKEDIT")]
-        lo = align_down(min(g.vmaddr for g in segs))
-        hi = align_up(max(g.vmaddr + g.vmsize for g in segs))
-        image = bytearray(hi - lo)
-        prots = [0] * ((hi - lo) // PAGE)
-        for g in segs:
-            data = m.data[g.fileoff:g.fileoff + g.filesize]
-            image[g.vmaddr - lo:g.vmaddr - lo + len(data)] = data
-            for pg in range((align_down(g.vmaddr) - lo) // PAGE, (align_up(g.vmaddr + g.vmsize) - lo) // PAGE):
-                prots[pg] = max(prots[pg], PROT_RW if g.initprot & 2 else PROT_R)
-        self.regions = []  # [addr, size, prot, bytes]
-        start = 0
-        for pg in range(1, len(prots) + 1):
-            if pg == len(prots) or prots[pg] != prots[start]:
-                a, b = start * PAGE, pg * PAGE
-                self.regions.append([lo + a, b - a, prots[start], image[a:b]])
-                start = pg
-        # Bind lazy pointers of coalesced weak symbols to their local definitions,
-        # as dyld would, so the stub jump lands on real code under Unicorn.
-        self.stub_names = m.stubs()
-        stub_sec = m.section("__TEXT", "__symbol_stub")
-        la = m.section("__DATA", "__la_symbol_ptr")
-        self.stub_range = (stub_sec.addr, stub_sec.end)
-        for i in range(stub_sec.size // stub_sec.reserved2):
-            name = self.stub_names.get(stub_sec.addr + i * stub_sec.reserved2)
-            sym = m.defined_symbol(name) if name else None
-            if sym is not None:
-                self.poke(la.addr + 4 * i, struct.pack("<I", sym.value))
-        self.text = m.section("__TEXT", "__text")
-
-    def poke(self, addr, data):
-        for r in self.regions:
-            if r[0] <= addr < r[0] + r[1]:
-                r[3][addr - r[0]:addr - r[0] + len(data)] = data
-                return
-        raise KeyError(hex(addr))
-
+    def __init__(self, path, modules):
+        self.world = World(path, modules)
+        w = self.world
+        regs = w.regions()
+        lo = align_down(min(a for a, _, _ in regs))
+        hi = align_up(max(a + len(d) for a, d, _ in regs))
+        # Sparse page map: page -> prot; contents in one dict of page buffers.
+        prots = {}
+        pages = {}
+        for a, data, prot in regs:
+            for pg in range(align_down(a), align_up(a + len(data)), PAGE):
+                prots[pg] = max(prots.get(pg, 0), PROT_RW if prot == PROT_RW else PROT_R)
+                pages.setdefault(pg, bytearray(PAGE))
+            for pg in range(align_down(a), align_up(a + len(data)), PAGE):
+                s0, s1 = max(pg, a), min(pg + PAGE, a + len(data))
+                pages[pg][s0 - pg:s1 - pg] = data[s0 - a:s1 - a]
+        self.regions = []  # [addr, size, prot, bytes], runs of contiguous equal-prot pages
+        run = None
+        for pg in sorted(pages):
+            if run and run[0] + run[1] == pg and run[2] == prots[pg]:
+                run[1] += PAGE
+                run[3] += pages[pg]
+            else:
+                run = [pg, PAGE, prots[pg], bytearray(pages[pg])]
+                self.regions.append(run)
+        self.import_names = w.import_names
+        self.functions = [(a, n) for a, n in w.functions() if any(l <= a < h for l, h in w.code_ranges())]
 
 def make_case(rng):
     """Random scratch heap, stack with arguments, and initial registers."""
@@ -149,22 +135,22 @@ class Emu:
             self.uc.mem_map(addr, size, U.UC_PROT_READ | U.UC_PROT_EXEC | (U.UC_PROT_WRITE if prot == PROT_RW else 0))
         self.uc.mem_map(SCRATCH, SCRATCH_SIZE, U.UC_PROT_READ | U.UC_PROT_WRITE)
         self.uc.mem_map(STACK, STACK_SIZE, U.UC_PROT_READ | U.UC_PROT_WRITE)
+        n = len(img.import_names)
+        self.uc.mem_map(IMPORT_BASE, align_up(4 * n), U.UC_PROT_READ | U.UC_PROT_EXEC)
         self.fault = None
         self.import_hit = None
         self.uc.hook_add(U.UC_HOOK_MEM_INVALID, self._on_invalid)
-        lo, hi = img.stub_range
-        self.uc.hook_add(U.UC_HOOK_CODE, self._on_stub, begin=lo, end=hi - 1)
+        self.uc.hook_add(U.UC_HOOK_CODE, self._on_import, begin=IMPORT_BASE, end=IMPORT_BASE + 4 * n - 1)
 
     def _on_invalid(self, uc, access, addr, size, value, data):
         self.fault = addr
         return False
 
-    def _on_stub(self, uc, addr, size, data):
-        name = self.img.stub_names.get(addr)
-        sym = self.img.m.defined_symbol(name) if name else None
-        if sym is None:  # a real import: stop here, like the native side's trap
-            self.import_hit = name
-            uc.emu_stop()
+    def _on_import(self, uc, addr, size, data):
+        # Reached a host import (directly, or through a stub's lazy pointer): stop
+        # here, matching the native side's trap in rt_import.
+        self.import_hit = self.img.import_names[(addr - IMPORT_BASE) // 4]
+        uc.emu_stop()
 
     def load(self, scratch, stack):
         for addr, size, prot, buf in self.img.regions:
@@ -213,11 +199,12 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--fn", default="")
     ap.add_argument("-v", action="store_true")
+    ap.add_argument("--module", action="append", default=[])
     args = ap.parse_args()
 
-    img = Image(args.binary)
-    funcs = [f.value for f in img.m.functions()]
-    names = {f.value: f.name for f in img.m.functions()}
+    img = Image(args.binary, args.module)
+    funcs = [a for a, _ in img.functions]
+    names = dict(img.functions)
     rng = random.Random(args.seed)
     picks = [int(x, 16) for x in args.fn.split(",") if x] or rng.sample(funcs, args.n)
     nat = Native(args.lib)

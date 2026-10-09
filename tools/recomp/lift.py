@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import capstone
 from capstone import x86 as X
 
-from macho import MachO
+from world import IMPORT_BASE, World
 
 OP_REG, OP_IMM, OP_MEM = X.X86_OP_REG, X.X86_OP_IMM, X.X86_OP_MEM
 
@@ -58,57 +58,75 @@ class Unsupported(Exception):
 
 
 class Program:
-    def __init__(self, path: str):
-        self.m = MachO(path)
-        self.text = self.m.section("__TEXT", "__text")
-        self.code = self.m.read(self.text.addr, self.text.size)
+    """The code to lift: game executable plus guest modules, as resolved by a World."""
+
+    def __init__(self, world: World):
+        self.w = world
         self.md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         self.md.detail = True
-        funcs = self.m.functions()
-        self.names = {f.value: f.name for f in funcs}
-        self.starts = [f.value for f in funcs]
-        self.ends = {a: b for a, b in zip(self.starts, self.starts[1:] + [self.text.end])}
-        # Stubs: either an import (by name) or a coalesced weak definition inside this binary.
-        self.stub_import: Dict[int, str] = {}
+        self.ranges = sorted(world.code_ranges())
+        self.code = [(lo, hi, world.read(lo, hi - lo)) for lo, hi in self.ranges]
+        funcs = [(a, n) for a, n in world.functions() if self.in_text(a)]
+        self.names = dict(funcs)
+        self.starts = [a for a, _ in funcs]
+        self.ends = {}
+        for a, b in zip(self.starts, self.starts[1:] + [None]):
+            hi = self.range_end(a)
+            self.ends[a] = min(b, hi) if b is not None else hi
+        # Stubs resolve either to guest code (a direct call) or to a host import.
+        self.stub_import: Dict[int, int] = {}
         self.stub_local: Dict[int, int] = {}
-        for addr, name in self.m.stubs().items():
-            sym = self.m.defined_symbol(name)
-            if sym is not None and self.text.addr <= sym.value < self.text.end:
-                self.stub_local[addr] = sym.value
-            else:
-                self.stub_import[addr] = name
-        self.import_names = sorted(set(self.stub_import.values()))
-        self.import_id = {n: i for i, n in enumerate(self.import_names)}
+        for addr, (kind, v) in world.stub_targets().items():
+            if kind == "guest":
+                self.stub_local[addr] = v
+            elif kind == "host":
+                self.stub_import[addr] = v
+        self.import_names = world.import_names
+        self.import_id = world.import_id
 
     # ---- address helpers ----
     def in_text(self, a: int) -> bool:
-        return self.text.addr <= a < self.text.end
+        return any(lo <= a < hi for lo, hi in self.ranges)
+
+    def range_end(self, a: int) -> int:
+        for lo, hi in self.ranges:
+            if lo <= a < hi:
+                return hi
+        return a
 
     def func_end(self, entry: int) -> int:
         if entry in self.ends:
             return self.ends[entry]
         import bisect
         i = bisect.bisect_right(self.starts, entry)
-        return self.starts[i] if i < len(self.starts) else self.text.end
+        hi = self.range_end(entry)
+        return min(self.starts[i], hi) if i < len(self.starts) else hi
 
-    def resolve_call(self, target: int) -> Tuple[str, object]:
-        """Classify a direct call/jump target: ('import', name) or ('func', addr)."""
+    def resolve_call(self, target: int) -> Tuple[str, int]:
+        """Classify a direct call/jump target: ('import', id) or ('func', addr)."""
         if target in self.stub_import:
             return "import", self.stub_import[target]
         if target in self.stub_local:
             return "func", self.stub_local[target]
+        if IMPORT_BASE <= target < IMPORT_BASE + 4 * len(self.import_names):
+            return "import", (target - IMPORT_BASE) // 4
         return "func", target
 
+    def import_name(self, i: int) -> str:
+        return self.import_names[i]
+
     def decode(self, addr: int):
-        off = addr - self.text.addr
-        for insn in self.md.disasm(self.code[off:off + 16], addr, 1):
-            return insn
+        for lo, hi, code in self.code:
+            if lo <= addr < hi:
+                off = addr - lo
+                for insn in self.md.disasm(code[off:off + 16], addr, 1):
+                    return insn
         return None
 
     def read32(self, addr: int) -> Optional[int]:
         try:
-            return struct.unpack("<I", self.m.read(addr, 4))[0]
-        except KeyError:
+            return struct.unpack("<I", self.w.read(addr, 4))[0]
+        except (KeyError, struct.error):
             return None
 
 
@@ -166,7 +184,9 @@ class Func:
                     break
                 if mn == "call" and insn.operands[0].type == OP_IMM:
                     kind, val = self.p.resolve_call(insn.operands[0].imm & 0xffffffff)
-                    if kind == "import" and (val in NORETURN_IMPORTS or "__throw_" in val):
+                    if kind == "import" and _noreturn(self.p.import_name(val)):
+                        break
+                    if kind == "func" and _noreturn(self.p.names.get(val, "")):
                         break
                 a = nxt
 
@@ -299,8 +319,10 @@ class Func:
                 if nxt in self.insns:
                     self.labels.add(nxt)
                     body.append(f"    goto L_{nxt:x};")
-                else:
+                elif nxt in self.p.ends:
                     body.extend("    " + s for s in self.tail_call(nxt))
+                else:  # after a no-return call: padding or inline data follows
+                    body.append(f'    rt_unimpl(cpu, 0x{nxt:x}u, "fell off function end");')
         # Labels can be added late (fallthrough gotos); re-emit them.
         out = [f"void f_{self.entry:08x}(CPU *cpu) {{", "    PROLOGUE;"]
         for line in body:
@@ -312,13 +334,17 @@ class Func:
         return text + "\n}\n"
 
     def tail_call(self, target: int) -> List[str]:
-        if not self.p.in_text(target) and target not in self.p.stub_import and target not in self.p.stub_local:
-            return [f'rt_unimpl(cpu, 0x{target:x}u, "jump outside text");']
         kind, val = self.p.resolve_call(target)
         if kind == "import":
-            return [f"SPILL; rt_import(cpu, {self.p.import_id[val]}); /* {val} */ return;"]
+            return [f"SPILL; rt_import(cpu, {val}); /* {self.p.import_name(val)} */ return;"]
+        if not self.p.in_text(val):
+            return [f'rt_unimpl(cpu, 0x{target:x}u, "jump outside text");']
         self.calls.add(val)
         return [f"SPILL; f_{val:08x}(cpu); return;"]
+
+
+def _noreturn(name: str) -> bool:
+    return name in NORETURN_IMPORTS or "__throw_" in name
 
 
 def base_mnemonic(insn) -> str:
@@ -510,7 +536,7 @@ class Emit:
                 return [f"PUSH32(0x{self.next:x}u);"]
             kind, val = self.f.p.resolve_call(t)
             if kind == "import":
-                return [f"PUSH32(0x{self.next:x}u); SPILL; rt_import(cpu, {self.f.p.import_id[val]}); RELOAD; /* {val} */"]
+                return [f"PUSH32(0x{self.next:x}u); SPILL; rt_import(cpu, {val}); RELOAD; /* {self.f.p.import_name(val)} */"]
             if not self.f.p.in_text(val):
                 raise Unsupported("call outside text")
             self.f.calls.add(val)
@@ -772,8 +798,11 @@ class Emit:
         else:
             d, a, b = ops
         n = self.bits(d)
+        if n == 16:
+            return [f"{{ int32_t p_ = (int32_t)(int16_t){self.rd(a)} * (int32_t)(int16_t){self.rd(b, 16)}; "
+                    f"CF = OF = (p_ != (int16_t)p_); {self.wr(d, '(uint32_t)p_')} }}"]
         if n != 32:
-            raise Unsupported("imul 16")
+            raise Unsupported("imul 8")
         return [f"{{ int64_t p_ = (int64_t)(int32_t){self.rd(a)} * (int32_t){self.rd(b, 32)}; "
                 f"CF = OF = (p_ != (int32_t)p_); {self.wr(d, '(uint32_t)p_')} }}"]
 
@@ -811,7 +840,15 @@ class Emit:
     def bitop(self, op_expr):
         d, b = self.ops
         if d.type == OP_MEM and b.type == OP_REG:
-            raise Unsupported("bt mem,reg bitstring")
+            if self.bits(d) != 32:
+                raise Unsupported("bt bitstring size")
+            # Bit-string form: the register is a signed bit offset from the operand.
+            s = [f"{{ int32_t o_ = (int32_t){self.rd(b)}; uint32_t a_ = {self.ea(d)} + (uint32_t)((o_ >> 5) * 4);",
+                 "uint32_t v_ = R32(a_), k_ = (uint32_t)o_ & 31u; CF = (v_ >> k_) & 1;"]
+            if op_expr:
+                s.append(f"W32(a_, {op_expr});")
+            s.append("}")
+            return [" ".join(s)]
         n = self.bits(d)
         s = [f"{{ uint32_t v_ = {self.rd(d)}, k_ = ({self.rd(b)}) & {n - 1}u; CF = (v_ >> k_) & 1;"]
         if op_expr:
@@ -1111,10 +1148,56 @@ class Emit:
         a = self.ea(s)
         return [f"{{ int32_t a_ = (int32_t)R32({a}), b_ = (int32_t)R32({a} + 4u); XMM({dx}).g[0] = a_; XMM({dx}).g[1] = b_; }}"]
 
+    # ---- atomics (guest memory is shared between guest threads) ----
+    def i_xadd(self):
+        d, src = self.ops
+        n = self.bits(d)
+        if n != 32:
+            raise Unsupported("xadd size")
+        if d.type == OP_MEM:
+            fetch = f"__atomic_fetch_add((uint32_t *)(M + {self.ea(d)}), b_, __ATOMIC_SEQ_CST)"
+            store = ""
+        else:
+            fetch = self.rd(d)
+            store = self.wr(d, "a_ + b_")
+        s = [f"{{ uint32_t b_ = {self.rd(src)}; uint32_t a_ = {fetch}; {store} uint32_t r_ = a_ + b_;"]
+        if self.want(FC):
+            s.append("CF = r_ < a_;")
+        if self.want(FO):
+            s.append("OF = (((a_ ^ r_) & (b_ ^ r_)) >> 31) & 1;")
+        s.extend(self.szp(32))
+        s.append(self.wr(src, "a_"))
+        s.append("}")
+        return [" ".join(s)]
+
+    def i_cmpxchg(self):
+        d, src = self.ops
+        if self.bits(d) != 32 or d.type != OP_MEM:
+            raise Unsupported("cmpxchg form")
+        return [f"{{ uint32_t e_ = eax; ZF = __atomic_compare_exchange_n((uint32_t *)(M + {self.ea(d)}), &e_, "
+                f"{self.rd(src)}, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); eax = e_; }}"]
+
+    def i_mfence(self):
+        return ["__atomic_thread_fence(__ATOMIC_SEQ_CST);"]
+
+    i_lfence = i_mfence
+    i_sfence = i_mfence
+
+    def i_pause(self):
+        return []
+
+    def i_pshufd(self):
+        d, s, imm = self.ops
+        dx = self.xmm(d)
+        k = imm.imm
+        return [f"{{ {self.vread(s)} XMM r_; " + " ".join(f"r_.d[{i}] = s_.d[{(k >> (2 * i)) & 3}];" for i in range(4))
+                + f" XMM({dx}) = r_; }}"]
+
     # ---- x87 (scalar only; 64-bit precision) ----
     def fsrc(self, op):
         if op.type == OP_MEM:
-            return {4: f"(double)RF32({self.ea(op)})", 8: f"RF64({self.ea(op)})"}.get(op.size) or self._bad("fld80")
+            return {4: f"(double)RF32({self.ea(op)})", 8: f"RF64({self.ea(op)})",
+                    10: f"rt_rf80(M, {self.ea(op)})"}[op.size]
         name = self.rn(op.reg)
         return f"ST({int(name[3])})"
 
@@ -1127,7 +1210,9 @@ class Emit:
                 return f"WF32({self.ea(op)}, (float)({val}));"
             if op.size == 8:
                 return f"WF64({self.ea(op)}, {val});"
-            raise Unsupported("fst80")
+            if op.size == 10:
+                return f"rt_wf80(M, {self.ea(op)}, {val});"
+            raise Unsupported("fst size")
         return f"ST({int(self.rn(op.reg)[3])}) = {val};"
 
     def i_fld(self):

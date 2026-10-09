@@ -59,22 +59,12 @@ static void on_trap(CPU *cpu, uint32_t addr, const char *what) {
     siglongjmp(t_env, 1);
 }
 
-static GuestFn find(uint32_t a) {
-    for (uint32_t lo = 0, hi = g_functab_len; lo < hi;) {
-        uint32_t mid = (lo + hi) / 2;
-        if (g_functab[mid].addr < a) lo = mid + 1;
-        else if (g_functab[mid].addr > a) hi = mid;
-        else return g_functab[mid].fn;
-    }
-    return NULL;
-}
-
 static void *runner(void *arg) {
     Job *job = arg;
     t_job = job;
     stack_t ss = {.ss_sp = malloc(1 << 20), .ss_size = 1 << 20, .ss_flags = 0};
     sigaltstack(&ss, NULL);
-    GuestFn fn = find(job->fn);
+    GuestFn fn = rt_lookup(job->fn);
     if (!fn) {
         job->code = DT_NOFUNC;
         return NULL;

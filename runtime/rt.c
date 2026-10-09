@@ -35,14 +35,21 @@ _Noreturn void rt_unimpl(CPU *cpu, uint32_t addr, const char *what) {
     abort();
 }
 
+/* Imports created at runtime (rt_dynamic_import) get ids after the static ones. */
+#define MAX_DYN_IMPORTS 1024
+GuestFn g_dyn_shims[MAX_DYN_IMPORTS];
+const char *g_dyn_names[MAX_DYN_IMPORTS];
+uint32_t g_dyn_count;
+
 void rt_import(CPU *cpu, uint32_t id) {
-    GuestFn shim = id < g_import_count ? g_import_shims[id] : NULL;
+    GuestFn shim = id < g_import_count ? g_import_shims[id]
+                 : id - g_import_count < g_dyn_count ? g_dyn_shims[id - g_import_count] : NULL;
     if (!shim) rt_unimpl(cpu, id, id < g_import_count ? g_import_names[id] : "bad import id");
     shim(cpu);
     cpu->r[4] += 4; /* pop the return address, as the callee's ret would */
 }
 
-static GuestFn lookup(uint32_t target) {
+GuestFn rt_lookup(uint32_t target) {
     uint32_t lo = 0, hi = g_functab_len;
     while (lo < hi) {
         uint32_t mid = (lo + hi) / 2;
@@ -52,17 +59,31 @@ static GuestFn lookup(uint32_t target) {
     return (lo < g_functab_len && g_functab[lo].addr == target) ? g_functab[lo].fn : NULL;
 }
 
+static const StubEntry *find_stub(uint32_t target) {
+    uint32_t lo = 0, hi = g_stubs_len;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) / 2;
+        if (g_stubs[mid].addr < target) lo = mid + 1;
+        else hi = mid;
+    }
+    return (lo < g_stubs_len && g_stubs[lo].addr == target) ? &g_stubs[lo] : NULL;
+}
+
 void rt_dispatch(CPU *cpu, uint32_t target) {
-    GuestFn fn = lookup(target);
+    GuestFn fn = rt_lookup(target);
     if (fn) {
         fn(cpu);
         return;
     }
-    for (uint32_t i = 0; i < g_import_count; i++) {
-        if (g_import_stub[i] == target) {
-            rt_import(cpu, i);
-            return;
-        }
+    if (target >= IMPORT_BASE && target < IMPORT_BASE + 4 * (g_import_count + g_dyn_count) && !(target & 3)) {
+        rt_import(cpu, (target - IMPORT_BASE) / 4);
+        return;
+    }
+    const StubEntry *st = find_stub(target);
+    if (st) {
+        if (st->is_import) rt_import(cpu, st->target);
+        else rt_dispatch(cpu, st->target);
+        return;
     }
     rt_unimpl(cpu, target, "dispatch miss");
 }

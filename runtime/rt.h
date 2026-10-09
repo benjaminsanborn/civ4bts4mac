@@ -31,9 +31,13 @@ typedef struct CPU {
 
 typedef void (*GuestFn)(CPU *);
 
+/* Guest address of host import `id` (for function pointers to host code). */
+#define IMPORT_BASE 0x01C00000u
+
 extern uint8_t *g_mem;
 
 void rt_dispatch(CPU *cpu, uint32_t target);
+GuestFn rt_lookup(uint32_t target);
 void rt_import(CPU *cpu, uint32_t id);
 _Noreturn void rt_unimpl(CPU *cpu, uint32_t addr, const char *what);
 
@@ -94,6 +98,30 @@ static inline int64_t rt_fround(CPU *cpu, double v) {
     case 2: return (int64_t)ceil(v);
     default: return (int64_t)trunc(v);
     }
+}
+
+/* 80-bit x87 extended values, converted to/from double (precision is lost). */
+static inline double rt_rf80(uint8_t *M, uint32_t a) {
+    uint64_t mant; uint16_t se;
+    memcpy(&mant, M + a, 8); memcpy(&se, M + a + 8, 2);
+    int sign = se >> 15, exp = se & 0x7fff;
+    double v;
+    if (exp == 0 && mant == 0) v = 0.0;
+    else if (exp == 0x7fff) v = (mant << 1) ? NAN : INFINITY;
+    else v = ldexp((double)mant, exp - 16383 - 63);
+    return sign ? -v : v;
+}
+static inline void rt_wf80(uint8_t *M, uint32_t a, double v) {
+    uint64_t mant = 0; uint16_t se = signbit(v) ? 0x8000 : 0;
+    double x = fabs(v);
+    if (isnan(v)) { se |= 0x7fff; mant = 0xc000000000000000ull; }
+    else if (isinf(v)) { se |= 0x7fff; mant = 0x8000000000000000ull; }
+    else if (x != 0) {
+        int e; double f = frexp(x, &e); /* x = f * 2^e, f in [0.5, 1) */
+        mant = (uint64_t)ldexp(f, 64);
+        se |= (uint16_t)(e - 1 + 16383);
+    }
+    memcpy(M + a, &mant, 8); memcpy(M + a + 8, &se, 2);
 }
 
 /* ---- helpers ---- */
