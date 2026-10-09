@@ -119,12 +119,9 @@ SHIM(_CGAffineTransformScale) {
     cpu->r[4] += 4;
 }
 
-/* ---- ports: window ports are TAG_PORT handles; port bounds are window-local ---- */
-static uint32_t g_current_port;
-SHIM(_GetPort) { W32_(g_mem, ARG(0), g_current_port); }
-SHIM(_SetPort) { g_current_port = ARG(0); }
-SHIM(_GetGWorld) { W32_(g_mem, ARG(0), g_current_port); if (ARG(1)) W32_(g_mem, ARG(1), 0x6764); }
-SHIM(_SetGWorld) { g_current_port = ARG(0); }
+/* ---- ports: window ports are TAG_PORT handles; port bounds are window-local.
+ * The current port and GWorlds live in quickdraw.c. ---- */
+int qd_gworld_bounds(uint32_t port, int16_t r[4]);
 SHIM(_GetMainDevice) { RET(0x6764); }
 SHIM(_GetDeviceList) { RET(0x6764); }
 SHIM(_GetNextDevice) { RET(0); }
@@ -133,6 +130,8 @@ SHIM(_TestDeviceAttribute) { RET(0); }
 
 extern void plat_window_content_size(HWindow *w, int *width, int *height);
 SHIM(_GetPortBounds) {
+    int16_t gr[4];
+    if (qd_gworld_bounds(ARG(0), gr)) { put_rect(ARG(1), gr); RET(ARG(1)); return; }
     HWindow *w = gh_get(ARG(0), TAG_PORT);
     int width = 640, height = 480;
     if (w) plat_window_content_size(w, &width, &height);
@@ -161,8 +160,7 @@ SHIM(_DisposePort) {}
 const ShimDef shims_qd[] = {
     SHIM_ENTRY(_NewRgn), SHIM_ENTRY(_DisposeRgn), SHIM_ENTRY(_RectRgn), SHIM_ENTRY(_CopyRgn), SHIM_ENTRY(_EmptyRgn),
     SHIM_ENTRY(_IsRegionRectangular), SHIM_ENTRY(_GetRegionBounds), SHIM_ENTRY(_GetGrayRgn), SHIM_ENTRY(_OffsetRect),
-    SHIM_ENTRY(_InsetRect), SHIM_ENTRY(_EqualRect), SHIM_ENTRY(_EmptyRect), SHIM_ENTRY(_PtInRect), SHIM_ENTRY(_GetPort),
-    SHIM_ENTRY(_SetPort), SHIM_ENTRY(_GetGWorld), SHIM_ENTRY(_SetGWorld), SHIM_ENTRY(_GetMainDevice),
+    SHIM_ENTRY(_InsetRect), SHIM_ENTRY(_EqualRect), SHIM_ENTRY(_EmptyRect), SHIM_ENTRY(_PtInRect), SHIM_ENTRY(_GetMainDevice),
     SHIM_ENTRY(_GetDeviceList), SHIM_ENTRY(_GetNextDevice), SHIM_ENTRY(_SetGDevice), SHIM_ENTRY(_TestDeviceAttribute),
     SHIM_ENTRY(_GetPortBounds), SHIM_ENTRY(_SetPortBounds), SHIM_ENTRY(_GetPortClipRegion),
     SHIM_ENTRY(_GetPortVisibleRegion), SHIM_ENTRY(_ClipRect), SHIM_ENTRY(_CreateNewPort), SHIM_ENTRY(_DisposePort),

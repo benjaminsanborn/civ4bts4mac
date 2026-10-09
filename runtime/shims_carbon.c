@@ -155,6 +155,12 @@ SHIM(_EnterMovies) { RET(noErr); }
 /* Pretend every requested component exists; the game only checks for presence here. */
 SHIM(_FindNextComponent) { RET(1); }
 
+/* ---- QuickTime movies: not implemented yet; fail cleanly so the game skips them ---- */
+SHIM(_QTNewDataReferenceFromFSRef) { if (ARG(2)) W32_(g_mem, ARG(2), 0); RET(-43); }
+SHIM(_QTNewDataReferenceFromFullPathCFString) { if (ARG(3)) W32_(g_mem, ARG(3), 0); RET(-43); }
+SHIM(_NewMovieFromDataRef) { if (ARG(0)) W32_(g_mem, ARG(0), 0); RET(-2048 /* couldNotResolveDataRef */); }
+SHIM(_DisposeHandle) { if (ARG(0)) { gfree(R32_(g_mem, ARG(0))); gfree(ARG(0)); } }
+
 /* ---- Debugger: log instead of trapping ---- */
 SHIM(_Debugger) { rt_log("guest called Debugger()"); }
 
@@ -167,7 +173,8 @@ const ShimDef shims_carbon[] = {
     SHIM_ENTRY(_CSCopyUserName), SHIM_ENTRY(_Debugger), SHIM_ENTRY(_GetCurrentThread), SHIM_ENTRY(_FlushEvents),
     SHIM_ENTRY(_SetThreadTerminator), SHIM_ENTRY(_GetThreadState),
     SHIM_ENTRY(_InitCursor), SHIM_ENTRY(_SetQDGlobalsRandomSeed), SHIM_ENTRY(_EnterMovies),
-    SHIM_ENTRY(_FindNextComponent), SHIM_ENTRY(_CreateNibReferenceWithCFBundle), SHIM_ENTRY(_CreateNibReference), SHIM_ENTRY(_GetKeys),
+    SHIM_ENTRY(_FindNextComponent), SHIM_ENTRY(_QTNewDataReferenceFromFSRef),
+    SHIM_ENTRY(_QTNewDataReferenceFromFullPathCFString), SHIM_ENTRY(_NewMovieFromDataRef), SHIM_ENTRY(_DisposeHandle), SHIM_ENTRY(_CreateNibReferenceWithCFBundle), SHIM_ENTRY(_CreateNibReference), SHIM_ENTRY(_GetKeys),
     SHIM_ENTRY(_AEInstallEventHandler),
     {0, 0},
 };

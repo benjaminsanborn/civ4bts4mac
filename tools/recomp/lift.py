@@ -253,26 +253,44 @@ class Func:
         if op.type != OP_MEM or op.mem.scale != 4 or op.mem.base != 0 or op.mem.index == 0:
             return []
         base = op.mem.disp & 0xffffffff
-        idx_reg = insn.reg_name(op.mem.index)
-        # Look for the bounds check `cmp idx, N; ja default` just before the jump.
-        count = None
-        prev = sorted(k for k in self.insns if k < insn.address)[-8:]
-        for k in reversed(prev):
-            pi = self.insns[k]
-            if pi.mnemonic == "cmp" and len(pi.operands) == 2 and pi.operands[1].type == OP_IMM:
-                o0 = pi.operands[0]
-                if o0.type == OP_REG and _reg32(pi.reg_name(o0.reg)) == idx_reg:
-                    count = (pi.operands[1].imm & 0xffffffff) + 1
-                    break
+        count = self.switch_bound(insn)
         out = []
         for i in range(count if count is not None else 4096):
             v = self.p.read32(base + 4 * i)
             if v is None or not (self.entry <= v < self.end):
-                if count is None:
-                    break
-                return []
+                break
             out.append(v)
+        return out  # a bound that doesn't validate degrades to the in-range prefix
+
+    def straight_line_before(self, addr: int, n: int) -> List[object]:
+        """Up to n instructions that fall through into `addr`, nearest first."""
+        out = []
+        by_end = {}
+        for a, i in self.insns.items():
+            by_end.setdefault(a + i.size, i)
+        cur = addr
+        while len(out) < n and cur in by_end:
+            i = by_end[cur]
+            # Stop at anything that doesn't fall through, except the guard's ja/jae.
+            if i.mnemonic.startswith("j") and i.mnemonic not in ("ja", "jae") or i.mnemonic == "ret":
+                break
+            out.append(i)
+            cur = i.address
         return out
+
+    def switch_bound(self, insn) -> Optional[int]:
+        """Entry count from the guard `cmp X, N` + `ja`/`jae` leading to the jump."""
+        prev = self.straight_line_before(insn.address, 8)
+        for k, pi in enumerate(prev):
+            if pi.mnemonic == "cmp" and len(pi.operands) == 2 and pi.operands[1].type == OP_IMM:
+                nxt = prev[k - 1].mnemonic if k > 0 else ""
+                n = pi.operands[1].imm & 0xffffffff
+                if nxt == "ja":
+                    return n + 1
+                if nxt == "jae":
+                    return n
+                return None
+        return None
 
     # ---- flag liveness ----
     def succs(self, a: int) -> List[int]:

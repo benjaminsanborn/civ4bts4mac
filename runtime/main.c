@@ -288,6 +288,7 @@ _Noreturn void rt_fatal(const char *fmt, ...) {
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
+    rt_dump_recent_calls();
     if (t_cpu) backtrace_guest(t_cpu);
     backtrace_host();
     exit(70);
@@ -377,7 +378,7 @@ static void load_world(const char *path) {
 }
 
 extern const ShimDef shims_libc[], shims_stdio[], shims_pthread[], shims_cf[], shims_files[], shims_posix[], shims_carbon[], shims_dyld[], shims_events[],
-    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[];
+    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[];
 
 static void register_all_shims(void) {
     rt_register_shims(shims_libc);
@@ -396,6 +397,7 @@ static void register_all_shims(void) {
     rt_register_shims(shims_qd);
     rt_register_shims(shims_cf_xml);
     rt_register_shims(shims_iokit);
+    rt_register_shims(shims_quickdraw);
     uint32_t have = 0;
     for (uint32_t i = 0; i < g_import_count; i++) have += g_import_shims[i] != NULL;
     rt_log("%u/%u host imports implemented", have, g_import_count);

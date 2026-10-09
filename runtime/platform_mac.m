@@ -120,8 +120,17 @@ static void add_mouse_params(HEvent *e, NSEvent *ev, HWindow *w) {
     ev_set_param(e, kEventParamMouseDelta, typeHIPoint, delta, 8);
 }
 
+/* Mouse events always carry a game window: Carbon handlers read
+ * kEventParamWindowRef without checking for errors. */
+static HWindow *event_window(NSEvent *ev) {
+    HWindow *w = [ev window] ? hwindow_for([ev window]) : NULL;
+    if (!w) w = g_focus;
+    if (!w && [g_windows count]) w = [g_windows[0] pointerValue];
+    return w;
+}
+
 static void post_mouse(NSEvent *ev, uint32_t kind, uint16_t button) {
-    HWindow *w = [ev window] ? hwindow_for([ev window]) : g_focus;
+    HWindow *w = event_window(ev);
     HEvent *e = ev_create(kEventClassMouse, kind);
     add_mouse_params(e, ev, w);
     if (button) {
@@ -173,7 +182,7 @@ static void translate(NSEvent *ev) {
     case NSEventTypeRightMouseDragged:
     case NSEventTypeOtherMouseDragged: post_mouse(ev, kEventMouseDragged, 0); break;
     case NSEventTypeScrollWheel: {
-        HWindow *w = [ev window] ? hwindow_for([ev window]) : g_focus;
+        HWindow *w = event_window(ev);
         HEvent *e = ev_create(kEventClassMouse, kEventMouseWheelMoved);
         add_mouse_params(e, ev, w);
         uint16_t axis = 1; /* kEventMouseWheelAxisY */

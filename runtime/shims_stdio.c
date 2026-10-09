@@ -337,7 +337,23 @@ static void write_file(FILE *f, WOut *o) {
 SHIM(_sprintf) { FORMAT(ARG(1), 0, ARGADDR(2)); RET(emit_narrow(&o_, ARG(0), 0x7fffffff)); DONE(); }
 SHIM(_snprintf) { FORMAT(ARG(2), 0, ARGADDR(3)); RET(emit_narrow(&o_, ARG(0), ARG(1))); DONE(); }
 SHIM(_vsprintf) { FORMAT(ARG(1), 0, ARG(2)); RET(emit_narrow(&o_, ARG(0), 0x7fffffff)); DONE(); }
-SHIM(_vsnprintf) { FORMAT(ARG(2), 0, ARG(3)); RET(emit_narrow(&o_, ARG(0), ARG(1))); DONE(); }
+SHIM(_vsnprintf) {
+    FORMAT(ARG(2), 0, ARG(3));
+    RET(emit_narrow(&o_, ARG(0), ARG(1)));
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("CIV4_DEBUG_FMT") != NULL;
+    if (dbg && strstr(CPTR(ARG(2)), "xml")) {
+        fprintf(stderr, "[fmt] '%s' va=%08x args %08x %08x -> '%s'\n", CPTR(ARG(2)), ARG(3), R32_(g_mem, ARG(3)),
+                R32_(g_mem, ARG(3) + 4), ARG(0) ? CPTR(ARG(0)) : "");
+        for (int k = 0; k < 2; k++) {
+            uint32_t a = R32_(g_mem, ARG(3) + 4 * k);
+            fprintf(stderr, "[fmt]   arg%d bytes:", k);
+            for (int b = 0; b < 12; b++) fprintf(stderr, " %02x", R8_(g_mem, a + b));
+            fprintf(stderr, "\n");
+        }
+    }
+    DONE();
+}
 /* __sprintf_chk(dst, flag, dstlen, fmt, ...) */
 SHIM(___sprintf_chk) { FORMAT(ARG(3), 0, ARGADDR(4)); RET(emit_narrow(&o_, ARG(0), ARG(2))); DONE(); }
 SHIM(___vsprintf_chk) { FORMAT(ARG(3), 0, ARG(4)); RET(emit_narrow(&o_, ARG(0), ARG(2))); DONE(); }

@@ -438,6 +438,29 @@ SHIM(_CFURLCreateCopyAppendingPathComponent) {
 }
 SHIM(_CFURLCreateCopyDeletingLastPathComponent) { RETCF_OWNED(CFURLCreateCopyDeletingLastPathComponent(NULL, CFI(1))); }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+SHIM(_CFURLCreateDataAndPropertiesFromResource) {
+    /* (alloc, url, CFDataRef *data, CFDictionaryRef *props, CFArrayRef desired, SInt32 *err) */
+    CFDataRef data = NULL;
+    CFDictionaryRef props = NULL;
+    SInt32 err = 0;
+    Boolean ok = CFURLCreateDataAndPropertiesFromResource(NULL, CFI(1), ARG(2) ? &data : NULL, ARG(3) ? &props : NULL,
+                                                         CFI(4), &err);
+    if (ARG(2)) W32_(g_mem, ARG(2), cf_out_owned(data));
+    if (ARG(3)) W32_(g_mem, ARG(3), cf_out_owned(props));
+    if (ARG(5)) W32_(g_mem, ARG(5), (uint32_t)err);
+    RET(ok);
+}
+SHIM(_CFURLWriteDataAndPropertiesToResource) {
+    /* (url, data, props, SInt32 *err) */
+    SInt32 err = 0;
+    Boolean ok = CFURLWriteDataAndPropertiesToResource(CFI(0), CFI(1), CFI(2), &err);
+    if (ARG(3)) W32_(g_mem, ARG(3), (uint32_t)err);
+    RET(ok);
+}
+#pragma clang diagnostic pop
+
 /* ---- bundles ---- */
 SHIM(_CFBundleGetMainBundle) { RETCF(g_main_bundle); }
 SHIM(_CFBundleCreate) {
@@ -536,6 +559,7 @@ const ShimDef shims_cf[] = {
     SHIM_ENTRY(_CFURLCreateFromFileSystemRepresentation), SHIM_ENTRY(_CFURLCreateWithString),
     SHIM_ENTRY(_CFURLCopyFileSystemPath), SHIM_ENTRY(_CFURLGetString), SHIM_ENTRY(_CFURLGetFileSystemRepresentation),
     SHIM_ENTRY(_CFURLCreateCopyAppendingPathComponent), SHIM_ENTRY(_CFURLCreateCopyDeletingLastPathComponent),
+    SHIM_ENTRY(_CFURLCreateDataAndPropertiesFromResource), SHIM_ENTRY(_CFURLWriteDataAndPropertiesToResource),
     SHIM_ENTRY(_CFBundleGetMainBundle), SHIM_ENTRY(_CFBundleCreate), SHIM_ENTRY(_CFBundleCopyBundleURL),
     SHIM_ENTRY(_CFBundleCopyResourcesDirectoryURL), SHIM_ENTRY(_CFBundleCopyResourceURL),
     SHIM_ENTRY(_CFBundleCopyLocalizedString), SHIM_ENTRY(_CFBundleGetValueForInfoDictionaryKey),

@@ -14,5 +14,5 @@ for f in runtime/*.m; do
     [ "$o" -nt "$f" ] && [ "$o" -nt runtime/shim.h ] || clang -c $CFLAGS -fobjc-arc "$f" -o "$o"
 done
 clang -O2 -g build/rt/*.o build/libgame.a -framework CoreFoundation -framework Cocoa -framework OpenGL \
-    -framework CoreGraphics -Wl,-export_dynamic -o build/civ4
+    -framework CoreGraphics -framework CoreText -Wl,-export_dynamic -o build/civ4
 echo "linked build/civ4"
