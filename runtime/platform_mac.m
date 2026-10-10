@@ -5,6 +5,11 @@
  * left of the main display, y down, in points. */
 #import <Cocoa/Cocoa.h>
 
+#include <spawn.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <pthread.h>
+#import <QuartzCore/QuartzCore.h>
 #include "cf.h"
 #include <math.h>
 #include "events.h"
@@ -46,6 +51,31 @@ static NSPoint g_mouse_global;
 @end
 
 /* ---- application ---- */
+/* Hang watchdog: if the main thread stops pumping events for 20 s, save a
+ * stack sample of the whole process to build/hangs/ (once per stall). */
+static _Atomic double g_heartbeat;
+static void *watchdog(void *unused) {
+    (void)unused;
+    int reported = 0;
+    for (;;) {
+        sleep(5);
+        double idle = CACurrentMediaTime() - g_heartbeat;
+        if (idle < 20) { reported = 0; continue; }
+        if (reported) continue;
+        reported = 1;
+        char dir[PATH_MAX], path[PATH_MAX], pid[16];
+        rt_build_path("hangs", dir, sizeof dir);
+        mkdir(dir, 0755);
+        snprintf(path, sizeof path, "%s/hang_%ld.txt", dir, (long)time(NULL));
+        snprintf(pid, sizeof pid, "%d", getpid());
+        rt_log("main thread stalled for %.0f s; sampling to %s", idle, path);
+        char *argv[] = {"/usr/bin/sample", pid, "5", "-file", path, NULL};
+        pid_t child;
+        if (posix_spawn(&child, argv[0], NULL, NULL, argv, NULL) == 0) waitpid(child, NULL, 0);
+    }
+    return NULL;
+}
+
 static void ensure_app(void) {
     static int done;
     if (done) return;
@@ -423,6 +453,19 @@ static void translate(NSEvent *ev) {
 
 void plat_pump(double timeout) {
     ensure_app();
+    g_heartbeat = CACurrentMediaTime();
+    static int watchdog_started;
+    if (!watchdog_started) {
+        watchdog_started = 1;
+        pthread_t t;
+        pthread_create(&t, NULL, watchdog, NULL);
+        pthread_detach(t);
+    }
+    static int stalled;
+    if (!stalled && getenv("CIV4_TEST_STALL") && CACurrentMediaTime() - g_heartbeat < 1 && ev_now() > 10) {
+        stalled = 1; /* test the watchdog: stall the main thread once */
+        sleep(28);
+    }
     static int script_init;
     if (!script_init) {
         script_init = 1;

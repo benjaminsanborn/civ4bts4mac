@@ -148,7 +148,7 @@ SHIM(_NewMovieFromDataRef) { MOVIE_LOCK;
     m->output = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:attrs];
     [m->item addOutput:m->output];
     m->player = [AVPlayer playerWithPlayerItem:m->item];
-    if (getenv("CIV4_MUTE")) m->player.muted = YES;
+    if (getenv("CIV4_MUTE")) m->player.volume = 0; /* silent, but the audio path still runs */
     m->player.actionAtItemEnd = AVPlayerActionAtItemEndPause;
     m->g = gh_new(TAG_MOVIE, m);
     if (!g_movies) g_movies = [NSMutableArray new];
@@ -234,7 +234,7 @@ SHIM(_SetMovieVolume) { MOVIE_LOCK;
     HMovie *m = movie_of(ARG(0));
     if (!m) return;
     m->volume = (int16_t)ARG(1);
-    m->player.volume = m->volume <= 0 ? 0 : m->volume / 256.0f;
+    m->player.volume = m->volume <= 0 || getenv("CIV4_MUTE") ? 0 : m->volume / 256.0f;
 }
 SHIM(_GetMovieAudioBalance) { MOVIE_LOCK; if (ARG(1)) WF32_(g_mem, ARG(1), 0); RET(noErr); }
 SHIM(_SetMovieAudioBalance) { MOVIE_LOCK; RET(noErr); }
