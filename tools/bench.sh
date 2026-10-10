@@ -39,4 +39,5 @@ while kill -0 $PID 2>/dev/null; do
 done
 kill $PID 2>/dev/null
 wait $PID 2>/dev/null
-awk -v n="$TURNS" 'NR==1{t0=$1; s0=$2} {if ($1 > t) {t=$1; s=$2}} END{if (t>t0) printf "turns %d-%d: %.1f s total, %.2f s/turn\n", t0, t, s-s0, (s-s0)/(t-t0); else print "no turns completed"}' "$TL"
+# Per-turn seconds (time between the first log of consecutive turns).
+awk '$1 != t {if (t != "") printf "turn %d: %.1f s\n", t, $2 - s; t = $1; s = $2}' "$TL"

@@ -32,14 +32,20 @@ uint32_t gh_new(uint32_t tag, void *host) {
     return g;
 }
 
+/* Handles live in the guest heap, 8-byte aligned. Anything else (a stale or
+ * garbage pointer from a guest race) is rejected before it is read: outside
+ * the heap the read itself would fault. */
+static int plausible(uint32_t g) { return g >= 0x10000000u && g < 0xA0000000u && !(g & 7); }
+
 void *gh_get(uint32_t g, uint32_t tag) {
-    if (!g) return NULL;
+    if (!plausible(g)) return NULL;
     if (R32_(g_mem, g) != tag) return NULL;
-    return g_objs[R32_(g_mem, g + 4)];
+    uint32_t idx = R32_(g_mem, g + 4);
+    return idx < g_n ? g_objs[idx] : NULL;
 }
 
 void gh_free(uint32_t g) {
-    if (!g) return;
+    if (!plausible(g)) return;
     pthread_mutex_lock(&g_lock);
     uint32_t idx = R32_(g_mem, g + 4);
     g_objs[idx] = NULL;
