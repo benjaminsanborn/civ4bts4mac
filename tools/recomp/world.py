@@ -54,6 +54,20 @@ def hostdata_layout(extra: Optional[List[str]] = None) -> Tuple[Dict[str, int], 
     return cells, cur
 
 
+
+# Small, explicit changes to the game's code, applied before lifting:
+# address -> (original bytes, replacement, reason). Skipped if the original
+# bytes don't match (a different game build).
+GAME_PATCHES = {
+    # Aspyr hardcodes the Low graphics level for new profiles (CvUserProfile::
+    # reset, and a fallback in CvMenuManager::setupGame) and for Options >
+    # Restore Defaults (CvUserProfile::resetOptions). Any Mac running this
+    # harness handles High easily: use GRAPHICLEVEL_HIGH (0).
+    0x00b4579d: (bytes([2, 0, 0, 0]), bytes([0, 0, 0, 0]), "profile reset: graphics level High"),
+    0x00bc27f3: (bytes([2, 0, 0, 0]), bytes([0, 0, 0, 0]), "new profiles: graphics level High"),
+    0x00b46c87: (bytes([2, 0, 0, 0]), bytes([0, 0, 0, 0]), "restore defaults: graphics level High"),
+}
+
 class World:
     def __init__(self, game_path: str, module_prefixes: List[str]):
         self.game = MachO(game_path)
@@ -123,7 +137,26 @@ class World:
         for m in self.modules:
             if m.base <= addr < m.base + len(m.image):
                 return m.read(addr, size)
-        return self.game.read(addr, size)
+        data = self.game.read(addr, size)
+        for pa, (old, new) in self.patches().items():
+            if pa < addr + size and addr < pa + len(new):
+                buf = bytearray(data)
+                for i, b in enumerate(new):
+                    if addr <= pa + i < addr + size:
+                        buf[pa + i - addr] = b
+                data = bytes(buf)
+        return data
+
+    def patches(self) -> Dict[int, Tuple[bytes, bytes]]:
+        """GAME_PATCHES whose original bytes match this binary."""
+        if getattr(self, "_patches", None) is None:
+            self._patches = {}
+            for addr, (old, new, why) in GAME_PATCHES.items():
+                if self.game.read(addr, len(old)) == old:
+                    self._patches[addr] = (old, new)
+                else:
+                    print(f"warning: patch at {addr:08x} ({why}) does not match this binary; skipped")
+        return self._patches
 
     # ---- exceptions ----
     def eh_frames(self) -> List[Tuple[int, int]]:
@@ -169,6 +202,9 @@ class World:
             for a, name, addend in g.binds("bind") + g.binds("lazy_bind"):
                 if seg.vmaddr <= a < seg.vmaddr + seg.vmsize:
                     struct.pack_into("<I", buf, a - seg.vmaddr, (self.address_of(name) + addend) & 0xFFFFFFFF)
+            for pa, (old, new) in self.patches().items():
+                if seg.vmaddr <= pa < seg.vmaddr + seg.vmsize:
+                    buf[pa - seg.vmaddr:pa - seg.vmaddr + len(new)] = new
             out.append((seg.vmaddr, bytes(buf), PROT_RW if seg.initprot & 2 else PROT_R))
         out.append((HOSTDATA_BASE, bytes(self.hostdata_end - HOSTDATA_BASE), PROT_RW))
         for m in self.modules:
