@@ -3,6 +3,7 @@
 #include "shim.h"
 
 #include <dirent.h>
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -198,6 +199,7 @@ SHIM(_closedir$UNIX2003) {
 }
 
 /* ---- process / identity ---- */
+SHIM(_inet_addr) { RET(inet_addr(CPTR(ARG(0)))); } /* network byte order, same on both sides */
 SHIM(_getpid) { RET(getpid()); }
 SHIM(_getppid) { RET(getppid()); }
 SHIM(_getuid) { RET(getuid()); }
@@ -333,7 +335,7 @@ const ShimDef shims_posix[] = {
     SHIM_ENTRY(_getcwd), SHIM_ENTRY(_readlink), SHIM_ENTRY(_realpath$DARWIN_EXTSN), SHIM_ENTRY(_rmdir),
     SHIM_ENTRY(_isatty), SHIM_ENTRY(_dup), SHIM_ENTRY(_dup2), SHIM_ENTRY(_fcntl$UNIX2003), SHIM_ENTRY(_umask),
     SHIM_ENTRY(_utime), SHIM_ENTRY(_fsync$UNIX2003), SHIM_ENTRY(_opendir$INODE64$UNIX2003),
-    SHIM_ENTRY(_readdir$INODE64), SHIM_ENTRY(_closedir$UNIX2003), SHIM_ENTRY(_getpid), SHIM_ENTRY(_getppid),
+    SHIM_ENTRY(_readdir$INODE64), SHIM_ENTRY(_closedir$UNIX2003), SHIM_ENTRY(_inet_addr), SHIM_ENTRY(_getpid), SHIM_ENTRY(_getppid),
     SHIM_ENTRY(_getuid), SHIM_ENTRY(_geteuid), SHIM_ENTRY(_getgid), SHIM_ENTRY(_getegid), SHIM_ENTRY(_getpgrp),
     SHIM_ENTRY(_getlogin), SHIM_ENTRY(_sysconf), SHIM_ENTRY(_uname), SHIM_ENTRY(__NSGetExecutablePath),
     SHIM_ENTRY(_system$UNIX2003), SHIM_ENTRY(_sigaction), SHIM_ENTRY(_siginterrupt), SHIM_ENTRY(_alarm),

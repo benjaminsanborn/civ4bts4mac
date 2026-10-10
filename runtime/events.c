@@ -227,6 +227,10 @@ __attribute__((weak)) void plat_pump(double timeout) {
 
 /* Wait for a queued event matching the list. Returns it (still queued unless pulled). */
 static HEvent *receive(CPU *cpu, uint32_t n, uint32_t list, double timeout, int pull) {
+    /* The game pumps events with a 1 ms timeout several times per frame and per
+     * loading step (PeekMessage). Sleeping that long costs far more than 1 ms on a
+     * modern system (timer coalescing), so very short timeouts just poll. */
+    if (timeout > 0 && timeout <= 0.002) timeout = 0;
     double deadline = timeout < 0 ? DBL_MAX : ev_now() + timeout;
     for (;;) {
         double next_timer = fire_timers(cpu);

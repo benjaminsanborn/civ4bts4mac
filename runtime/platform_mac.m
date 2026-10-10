@@ -53,6 +53,11 @@ static void ensure_app(void) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
+    /* A game: no App Nap, no timer coalescing. */
+    static id activity;
+    activity = [[NSProcessInfo processInfo]
+        beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
+                          reason:@"game"];
     [NSApp activateIgnoringOtherApps:YES];
     g_windows = [NSMutableArray new];
 }

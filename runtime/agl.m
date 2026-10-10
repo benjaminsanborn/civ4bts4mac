@@ -55,6 +55,7 @@ typedef struct HPBuf {
 } HPBuf;
 static GLuint g_default_fbo; /* the current context's pbuffer FBO, or 0 */
 GLuint agl_default_fbo(void) { return g_default_fbo; }
+static void pbuf_dump(HPBuf *p);
 
 static HCtx *g_ctxs[64];
 static int g_nctx;
@@ -168,6 +169,7 @@ SHIM(_aglSetDrawable) {
     HCtx *c = ctx_of(ARG(0));
     if (!c) { RET(0); return; }
     if (c->pbuf) {
+        pbuf_dump(c->pbuf);
         c->pbuf = NULL;
         if ([NSOpenGLContext currentContext] == c->ctx) {
             g_default_fbo = 0;
@@ -329,6 +331,47 @@ SHIM(_aglCreatePBuffer) {
     W32_(g_mem, ARG(5), p->g);
     RET(1);
 }
+/* CIV4_DEBUG_PBUF=dir: save the first pbuffer renders as PNGs (RGB and alpha side by side). */
+static void pbuf_dump(HPBuf *p) {
+    static const char *dir;
+    static int checked, n;
+    if (!checked) { checked = 1; dir = getenv("CIV4_DEBUG_PBUF"); if (dir) mkdir(dir, 0755); }
+    if (!dir || n >= 12) return;
+    int w = p->w, h = p->h;
+    uint8_t *px = malloc((size_t)w * h * 4), *out = malloc((size_t)w * 2 * h * 4);
+    GLint prev = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &prev);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, p->fbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    GLint vp[4];
+    glGetIntegerv(GL_VIEWPORT, vp);
+    rt_log("pbuffer dump %d: %dx%d tex %u err %04x viewport %d,%d %dx%d", n, w, h, p->tex, glGetError(), vp[0], vp[1], vp[2], vp[3]);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, (GLuint)prev);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            uint8_t *s = px + ((size_t)(h - 1 - y) * w + x) * 4;
+            uint8_t *d = out + ((size_t)y * w * 2 + x) * 4, *a = d + (size_t)w * 4;
+            d[0] = s[0], d[1] = s[1], d[2] = s[2], d[3] = 255;
+            a[0] = a[1] = a[2] = s[3], a[3] = 255;
+        }
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef bc = CGBitmapContextCreate(out, (size_t)w * 2, (size_t)h, 8, (size_t)w * 8, cs, kCGImageAlphaNoneSkipLast);
+    CGImageRef img = CGBitmapContextCreateImage(bc);
+    char path[1024];
+    snprintf(path, sizeof path, "%s/pbuf_%02d_%dx%d.png", dir, n++, w, h);
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+    CGImageDestinationRef dst = url ? CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, NULL) : NULL;
+    if (dst) {
+        CGImageDestinationAddImage(dst, img, NULL);
+        CGImageDestinationFinalize(dst);
+        CFRelease(dst);
+    }
+    if (url) CFRelease(url); CGImageRelease(img); CGContextRelease(bc); CGColorSpaceRelease(cs);
+    free(px); free(out);
+}
+
 static void pbuf_attach(HPBuf *p) {
     GLint prev = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &prev);
@@ -336,7 +379,16 @@ static void pbuf_attach(HPBuf *p) {
     glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, p->target, p->tex, 0);
     GLenum st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
     if (st != GL_FRAMEBUFFER_COMPLETE_EXT)
-        rt_log("pbuffer %dx%d target %04x format %04x tex %u: FBO incomplete (%04x)", p->w, p->h, p->target, p->ifmt, p->tex, st);
+    {
+        GLint tw = 0, th = 0, prev_tex = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+        glBindTexture(p->target, p->tex);
+        glGetTexLevelParameteriv(p->target, 0, GL_TEXTURE_WIDTH, &tw);
+        glGetTexLevelParameteriv(p->target, 0, GL_TEXTURE_HEIGHT, &th);
+        glBindTexture(p->target, (GLuint)prev_tex);
+        rt_log("pbuffer %dx%d target %04x format %04x tex %u (%dx%d): FBO incomplete (%04x)", p->w, p->h, p->target,
+               p->ifmt, p->tex, tw, th, st);
+    }
     glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, (GLuint)prev);
 }
 static void pbuf_alloc_tex(HPBuf *p, GLuint tex) {
@@ -345,7 +397,20 @@ static void pbuf_alloc_tex(HPBuf *p, GLuint tex) {
     glBindTexture(p->target, tex);
     /* Metal-backed GL can't render to 3-channel textures: RGB pbuffers get RGBA storage. */
     GLint ifmt = p->ifmt == GL_RGB || p->ifmt == GL_RGB8 || p->ifmt == 3 ? GL_RGBA8 : (GLint)p->ifmt;
+    /* NULL data means "no data" only while no pixel-unpack buffer is bound. */
+    GLint unpack = 0;
+    glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING_ARB, &unpack);
+    if (unpack) glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+    /* Nor while Apple client storage is on (the game enables it for uploads). */
+    GLint client = 0;
+    glGetIntegerv(GL_UNPACK_CLIENT_STORAGE_APPLE, &client);
+    if (client) glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_FALSE);
+    while (glGetError()) {}
     glTexImage2D(p->target, 0, ifmt, p->w, p->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    GLenum err = glGetError();
+    if (client) glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_TRUE);
+    if (err) rt_log("pbuffer texture %dx%d format %04x: GL error %04x", p->w, p->h, ifmt, err);
+    if (unpack) glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, (GLuint)unpack);
     glTexParameteri(p->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glBindTexture(p->target, (GLuint)prev);
 }
