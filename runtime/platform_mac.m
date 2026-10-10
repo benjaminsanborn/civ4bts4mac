@@ -986,11 +986,12 @@ SHIM(_QDSetNamedPixMapCursor) {
     [c set];
     RET(noErr);
 }
-/* (sic: Apple's API name is misspelled) */
+/* (sic: Apple's API name is misspelled; the game imports both spellings) */
 SHIM(_QDUnregisterNamedPixMapCursur) {
     [g_cursors removeObjectForKey:[NSString stringWithUTF8String:CPTR(ARG(0))]];
     RET(noErr);
 }
+SHIM(_QDUnregisterNamedPixMapCursor) { sh_QDUnregisterNamedPixMapCursur(cpu); }
 
 /* ---- port <-> global coordinates ---- */
 uint32_t qd_current_port(void);
@@ -1083,7 +1084,7 @@ const ShimDef shims_platform[] = {
     SHIM_ENTRY(_CGAssociateMouseAndMouseCursorPosition), SHIM_ENTRY(_CGSetLocalEventsSuppressionInterval),
     SHIM_ENTRY(_CGEventCreateMouseEvent), SHIM_ENTRY(_CGEventSetType), SHIM_ENTRY(_CGEventPost),
     SHIM_ENTRY(_QDRegisterNamedPixMapCursor), SHIM_ENTRY(_QDIsNamedPixMapCursorRegistered),
-    SHIM_ENTRY(_QDSetNamedPixMapCursor), SHIM_ENTRY(_QDUnregisterNamedPixMapCursur), SHIM_ENTRY(_GlobalToLocal),
+    SHIM_ENTRY(_QDSetNamedPixMapCursor), SHIM_ENTRY(_QDUnregisterNamedPixMapCursur), SHIM_ENTRY(_QDUnregisterNamedPixMapCursor), SHIM_ENTRY(_GlobalToLocal),
     SHIM_ENTRY(_LocalToGlobal), SHIM_ENTRY(_KeyTranslate), SHIM_ENTRY(_DisableMenuCommand), SHIM_ENTRY(_EnableMenuCommand),
     SHIM_ENTRY(_LSOpenCFURLRef), SHIM_ENTRY(_HideMenuBar), SHIM_ENTRY(_ShowMenuBar), SHIM_ENTRY(_IsMenuBarVisible), SHIM_ENTRY(_GetMBarHeight),
     {0, 0},
