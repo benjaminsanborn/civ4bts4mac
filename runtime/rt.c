@@ -2,6 +2,7 @@
 #include "rt.h"
 #include "functab.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -275,14 +276,25 @@ void rt_import(CPU *cpu, uint32_t id) {
     e->result = cpu->r[0];
 }
 
+/* Indirect calls (virtual methods, function pointers) are hot in the AI, so a
+ * direct-mapped cache sits in front of the binary search. Each entry packs
+ * (guest address << 32 | table index) into one word, so concurrent readers
+ * never see a torn entry. Address 0 is never a function, so 0 means empty. */
+static _Atomic uint64_t g_lookup_cache[1u << 16];
+
 GuestFn rt_lookup(uint32_t target) {
+    _Atomic uint64_t *slot = &g_lookup_cache[(target * 2654435761u) >> 16];
+    uint64_t v = atomic_load_explicit(slot, memory_order_relaxed);
+    if ((uint32_t)(v >> 32) == target && target) return g_functab[(uint32_t)v].fn;
     uint32_t lo = 0, hi = g_functab_len;
     while (lo < hi) {
         uint32_t mid = (lo + hi) / 2;
         if (g_functab[mid].addr < target) lo = mid + 1;
         else hi = mid;
     }
-    return (lo < g_functab_len && g_functab[lo].addr == target) ? g_functab[lo].fn : NULL;
+    if (lo >= g_functab_len || g_functab[lo].addr != target) return NULL;
+    atomic_store_explicit(slot, (uint64_t)target << 32 | lo, memory_order_relaxed);
+    return g_functab[lo].fn;
 }
 
 static const StubEntry *find_stub(uint32_t target) {
