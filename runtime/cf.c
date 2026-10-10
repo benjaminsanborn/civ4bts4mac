@@ -590,18 +590,30 @@ SHIM(_CFBundleGetFunctionPointerForName) {
 }
 
 /* ---- preferences (passed straight through to the host preference store) ---- */
-SHIM(_CFPreferencesCopyAppValue) { RETCF_OWNED(CFPreferencesCopyAppValue(CFI(0), CFI(1))); }
-SHIM(_CFPreferencesSetAppValue) { CFPreferencesSetAppValue(CFI(0), CFI(1), CFI(2)); }
-SHIM(_CFPreferencesAppSynchronize) { RET(CFPreferencesAppSynchronize(CFI(0))); }
+/* Test runs (tools/try.sh) set CIV4_PREFS_DOMAIN so they never touch the
+ * player's real preferences (the game keeps its display mode there). */
+static CFStringRef prefs_app(CFStringRef app) {
+    static CFStringRef override;
+    static int checked;
+    if (!checked) {
+        checked = 1;
+        const char *d = getenv("CIV4_PREFS_DOMAIN");
+        if (d && *d) override = CFStringCreateWithCString(NULL, d, kCFStringEncodingUTF8);
+    }
+    return override && app && app != kCFPreferencesAnyApplication ? override : app;
+}
+SHIM(_CFPreferencesCopyAppValue) { RETCF_OWNED(CFPreferencesCopyAppValue(CFI(0), prefs_app(CFI(1)))); }
+SHIM(_CFPreferencesSetAppValue) { CFPreferencesSetAppValue(CFI(0), CFI(1), prefs_app(CFI(2))); }
+SHIM(_CFPreferencesAppSynchronize) { RET(CFPreferencesAppSynchronize(prefs_app(CFI(0)))); }
 SHIM(_CFPreferencesGetAppBooleanValue) {
     Boolean valid = 0;
-    Boolean r = CFPreferencesGetAppBooleanValue(CFI(0), CFI(1), &valid);
+    Boolean r = CFPreferencesGetAppBooleanValue(CFI(0), prefs_app(CFI(1)), &valid);
     if (ARG(2)) W8_(g_mem, ARG(2), valid);
     RET(r);
 }
 SHIM(_CFPreferencesGetAppIntegerValue) {
     Boolean valid = 0;
-    CFIndex r = CFPreferencesGetAppIntegerValue(CFI(0), CFI(1), &valid);
+    CFIndex r = CFPreferencesGetAppIntegerValue(CFI(0), prefs_app(CFI(1)), &valid);
     if (ARG(2)) W8_(g_mem, ARG(2), valid);
     RET(r);
 }

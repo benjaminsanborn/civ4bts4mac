@@ -717,7 +717,16 @@ SHIM(_GetNextWindow) {
 
 SHIM(_GetWindowBounds) {
     /* (window, WindowRegionCode, Rect *out) */
-    NSWindow *nw = (__bridge NSWindow *)win_of(ARG(0))->ns;
+    HWindow *w = win_of(ARG(0));
+    if (w->mode_w) {
+        /* The display port is the game's whole screen: its mode size at the
+         * origin, like the mouse coordinates it reports. */
+        int16_t qd[4] = {0, 0, (int16_t)w->mode_h, (int16_t)w->mode_w};
+        memcpy(PTR(ARG(2)), qd, 8);
+        RET(noErr);
+        return;
+    }
+    NSWindow *nw = (__bridge NSWindow *)w->ns;
     NSRect r = ARG(1) == kWindowStructureRgn ? [nw frame] : [nw contentRectForFrameRect:[nw frame]];
     int16_t qd[4];
     cocoa_to_qd(r, qd);
