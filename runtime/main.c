@@ -148,6 +148,7 @@ static void backtrace_host(void) {
         }
     }
 }
+void rt_backtrace_host(void) { backtrace_host(); }
 
 void rt_dump_recent_calls(void);
 static void on_crash(int sig, siginfo_t *si, void *uc) {

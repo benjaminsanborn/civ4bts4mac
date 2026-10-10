@@ -56,10 +56,22 @@ static void movie_lock_init(void) {
     pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&g_movie_lock, &a);
 }
+void rt_backtrace_host(void);
 static int movie_lock(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, movie_lock_init);
-    pthread_mutex_lock(&g_movie_lock);
+    if (pthread_mutex_trylock(&g_movie_lock) == 0) return 0;
+    /* Contended: wait, but say so (once) if it takes suspiciously long. */
+    double t0 = CACurrentMediaTime();
+    static int reported;
+    while (pthread_mutex_trylock(&g_movie_lock) != 0) {
+        usleep(200);
+        if (!reported && CACurrentMediaTime() - t0 > 5) {
+            reported = 1;
+            rt_log("movie lock: waited over 5 s (possible deadlock); this thread:");
+            rt_backtrace_host();
+        }
+    }
     return 0;
 }
 static void movie_unlock(int *unused) { (void)unused; pthread_mutex_unlock(&g_movie_lock); }
@@ -120,8 +132,10 @@ static NSURL *transcoded_url(const char *path) {
     return [NSURL fileURLWithPath:[NSString stringWithUTF8String:out]];
 }
 
-SHIM(_NewMovieFromDataRef) { MOVIE_LOCK;
-    /* (Movie *out, short flags, short *id, Handle dataRef, OSType dataRefType) */
+SHIM(_NewMovieFromDataRef) {
+    /* (Movie *out, short flags, short *id, Handle dataRef, OSType dataRefType)
+     * The synchronous AVFoundation loading below runs without the movie lock;
+     * only registering the new movie takes it. */
     W32_(g_mem, ARG(0), 0);
     uint32_t h = ARG(3);
     const char *path = h ? CPTR(R32_(g_mem, h)) : NULL;
@@ -150,6 +164,7 @@ SHIM(_NewMovieFromDataRef) { MOVIE_LOCK;
     m->player = [AVPlayer playerWithPlayerItem:m->item];
     if (getenv("CIV4_MUTE")) m->player.volume = 0; /* silent, but the audio path still runs */
     m->player.actionAtItemEnd = AVPlayerActionAtItemEndPause;
+    MOVIE_LOCK;
     m->g = gh_new(TAG_MOVIE, m);
     if (!g_movies) g_movies = [NSMutableArray new];
     [g_movies addObject:[NSValue valueWithPointer:m]];
