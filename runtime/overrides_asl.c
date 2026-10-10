@@ -34,3 +34,4 @@ OVERRIDE(__ZN3ASL8ErrorDieEPK10__CFStringz) {
     log_cfstring("ASL::ErrorDie", ARG(0));
     rt_fatal("game called ASL::ErrorDie");
 }
+

@@ -295,3 +295,9 @@ void rt_heap_check(void) {}
 #endif
 
 size_t rt_heap_usable(uint32_t p) { return p ? (rz_on() ? R32_(g_mem, p - HDR) : mspace_usable_size(PTR(p))) : 0; }
+
+/* Guest heap bytes in use (for CIV4_MEMSTATS). */
+size_t rt_guest_heap_used(void) {
+    struct mallinfo mi = mspace_mallinfo(g_heap);
+    return mi.uordblks;
+}

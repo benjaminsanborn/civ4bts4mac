@@ -21,19 +21,77 @@
  * DocumentType:  {CFURLRef systemID; CFStringRef publicID}
  * EntityRef:     {CFXMLEntityTypeCode entityType} */
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct { CFXMLNodeRef node; uint32_t info; } *g_infos;
-static size_t g_ninfo, g_capinfo;
+/* node -> guest info copy (open addressing). The node's proxy keeps it alive;
+ * the CF sweep tells us when it goes. */
+typedef struct { CFXMLNodeRef node; uint32_t info; } InfoSlot;
+static InfoSlot *g_infos;
+static size_t g_capinfo, g_ninfo;
+static size_t info_hash(CFXMLNodeRef n) { return ((uintptr_t)n * 0x9E3779B97F4A7C15ull) & (g_capinfo - 1); }
+static uint32_t *info_find(CFXMLNodeRef n) {
+    if (!g_capinfo) return NULL;
+    for (size_t i = info_hash(n);; i = (i + 1) & (g_capinfo - 1)) {
+        if (!g_infos[i].node) return NULL;
+        if (g_infos[i].node == n) return &g_infos[i].info;
+    }
+}
+static void info_put(CFXMLNodeRef n, uint32_t info);
+static void info_grow(void) {
+    InfoSlot *old = g_infos;
+    size_t oldcap = g_capinfo;
+    g_capinfo = oldcap ? oldcap * 2 : 4096;
+    g_infos = calloc(g_capinfo, sizeof *g_infos);
+    g_ninfo = 0;
+    for (size_t i = 0; i < oldcap; i++)
+        if (old[i].node) info_put(old[i].node, old[i].info);
+    free(old);
+}
+static void info_put(CFXMLNodeRef n, uint32_t info) {
+    if ((g_ninfo + 1) * 2 > g_capinfo) info_grow();
+    size_t i = info_hash(n);
+    while (g_infos[i].node && g_infos[i].node != n) i = (i + 1) & (g_capinfo - 1);
+    if (!g_infos[i].node) g_ninfo++;
+    g_infos[i].node = n;
+    g_infos[i].info = info;
+}
+int cf_sweep_debug(void);
+static void info_forget(CFTypeRef h) {
+    pthread_mutex_lock(&g_lock);
+    if (g_capinfo) {
+        size_t mask = g_capinfo - 1, i = info_hash(h);
+        while (g_infos[i].node && g_infos[i].node != h) i = (i + 1) & mask;
+        if (g_infos[i].node) {
+            if (!cf_sweep_debug()) gfree(g_infos[i].info);
+            g_ninfo--;
+            for (size_t j = i;;) {
+                j = (j + 1) & mask;
+                if (!g_infos[j].node) break;
+                size_t k = info_hash(g_infos[j].node);
+                if (i <= j ? (k > i && k <= j) : (k > i || k <= j)) continue;
+                g_infos[i] = g_infos[j];
+                i = j;
+            }
+            g_infos[i].node = NULL;
+            g_infos[i].info = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_lock);
+}
 
 static uint32_t guest_info(CFXMLNodeRef node) {
     const void *info = CFXMLNodeGetInfoPtr(node);
     if (!info) return 0;
+    static int hooked;
+    if (!hooked) {
+        hooked = 1;
+        cf_on_sweep(info_forget);
+    }
     pthread_mutex_lock(&g_lock);
-    for (size_t i = 0; i < g_ninfo; i++)
-        if (g_infos[i].node == node) {
-            uint32_t g = g_infos[i].info;
-            pthread_mutex_unlock(&g_lock);
-            return g;
-        }
+    uint32_t *found = info_find(node);
+    if (found) {
+        uint32_t g = *found;
+        pthread_mutex_unlock(&g_lock);
+        return g;
+    }
     pthread_mutex_unlock(&g_lock);
     uint32_t g = gcalloc(1, 16);
     switch (CFXMLNodeGetTypeCode(node)) {
@@ -66,12 +124,7 @@ static uint32_t guest_info(CFXMLNodeRef node) {
         break;
     }
     pthread_mutex_lock(&g_lock);
-    if (g_ninfo == g_capinfo) {
-        g_capinfo = g_capinfo ? g_capinfo * 2 : 1024;
-        g_infos = realloc(g_infos, g_capinfo * sizeof *g_infos);
-    }
-    g_infos[g_ninfo].node = (CFXMLNodeRef)CFRetain(node);
-    g_infos[g_ninfo++].info = g;
+    info_put(node, g);
     pthread_mutex_unlock(&g_lock);
     return g;
 }

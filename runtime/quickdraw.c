@@ -67,6 +67,45 @@ static const char *family_name(int16_t id) {
 /* The UI's theme asks for Sylfaen, which ships with the game: make every
  * bundled TrueType font available to CoreText for this process. */
 const char *rt_build_path(const char *rel, char *buf, size_t n);
+/* The four Sylfaen files share one PostScript name, so a lookup by name returns
+ * whichever registered first (italic, as it happens). Keep each bundled face's
+ * descriptor with its traits and choose the face QuickDraw asked for. */
+typedef struct { char family[64]; int bold, italic; CTFontDescriptorRef desc; } GameFace;
+static GameFace g_faces[16];
+static int g_nfaces;
+static void note_faces(CFURLRef url) {
+    CFArrayRef descs = CTFontManagerCreateFontDescriptorsFromURL(url);
+    for (CFIndex i = 0; descs && i < CFArrayGetCount(descs) && g_nfaces < 16; i++) {
+        CTFontDescriptorRef d = CFArrayGetValueAtIndex(descs, i);
+        CFStringRef fam = CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute);
+        CFDictionaryRef traits = CTFontDescriptorCopyAttribute(d, kCTFontTraitsAttribute);
+        uint32_t sym = 0;
+        CFNumberRef n = traits ? CFDictionaryGetValue(traits, kCTFontSymbolicTrait) : NULL;
+        if (n) CFNumberGetValue(n, kCFNumberSInt32Type, &sym);
+        GameFace *f = &g_faces[g_nfaces];
+        if (fam && CFStringGetCString(fam, f->family, sizeof f->family, kCFStringEncodingUTF8)) {
+            f->bold = (sym & kCTFontBoldTrait) != 0;
+            f->italic = (sym & kCTFontItalicTrait) != 0;
+            int dup = 0;
+            for (int k = 0; k < g_nfaces; k++)
+                dup |= !strcasecmp(g_faces[k].family, f->family) && g_faces[k].bold == f->bold && g_faces[k].italic == f->italic;
+            if (!dup) {
+                f->desc = (CTFontDescriptorRef)CFRetain(d);
+                g_nfaces++;
+            }
+        }
+        if (fam) CFRelease(fam);
+        if (traits) CFRelease(traits);
+    }
+    if (descs) CFRelease(descs);
+}
+static CTFontRef game_face(const char *family, int bold, int italic, CGFloat size) {
+    for (int i = 0; i < g_nfaces; i++)
+        if (!strcasecmp(g_faces[i].family, family) && g_faces[i].bold == bold && g_faces[i].italic == italic)
+            return CTFontCreateWithFontDescriptor(g_faces[i].desc, size, NULL);
+    return NULL;
+}
+
 static void register_game_fonts(void) {
     /* Resource/Civ4 has the full family (regular, bold, italic, bold italic). */
     static const char *dirs[] = {"game/Resource/Civ4", "game/Resource/Fonts"};
@@ -83,6 +122,7 @@ static void register_game_fonts(void) {
             CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
             CFErrorRef err = NULL;
             int ok = CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &err);
+            note_faces(url);
             if (getenv("CIV4_DEBUG_FONTS")) rt_log("register font %s: %s", path, ok ? "ok" : "failed");
             if (err) CFRelease(err);
             CFRelease(url);
@@ -97,8 +137,10 @@ static CTFontRef make_font(const PortState *s) {
         fonts_registered = 1;
         register_game_fonts();
     }
-    CFStringRef name = CFStringCreateWithCString(NULL, family_name(s->font), kCFStringEncodingMacRoman);
     CGFloat size = s->size > 0 ? s->size : 12;
+    CTFontRef bundled = game_face(family_name(s->font), (s->face & 1) != 0, (s->face & 2) != 0, size);
+    if (bundled) return bundled;
+    CFStringRef name = CFStringCreateWithCString(NULL, family_name(s->font), kCFStringEncodingMacRoman);
     CTFontRef f = CTFontCreateWithName(name, size, NULL);
     static int debug = -1;
     if (debug < 0) debug = getenv("CIV4_DEBUG_FONTS") != NULL;

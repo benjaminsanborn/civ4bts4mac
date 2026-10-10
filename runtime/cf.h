@@ -23,4 +23,8 @@ uint32_t rt_dynamic_import(const char *name);
 
 void rt_cf_init(void);
 
+/* Called (with the CF lock held) for each host object whose proxy the sweep
+ * drops, so other modules can forget per-object state. */
+void cf_on_sweep(void (*fn)(CFTypeRef));
+
 #endif

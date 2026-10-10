@@ -226,6 +226,19 @@ __attribute__((weak)) void plat_pump(double timeout) {
 }
 
 /* Wait for a queued event matching the list. Returns it (still queued unless pulled). */
+/* Input scripts can run Python in the game ("py CODE"; platform_mac.m). */
+int plat_take_python(char *out, size_t n);
+static void run_script_python(CPU *cpu) {
+    char code[256];
+    if (!plat_take_python(code, sizeof code)) return;
+    static uint32_t fn;
+    if (!fn) fn = rt_lookup_symbol("_PyRun_SimpleString");
+    if (!fn) { rt_log("py: PyRun_SimpleString not found"); return; }
+    uint32_t g = gstrdup(code);
+    rt_log("py: %s -> %d", code, (int)rt_call(cpu, fn, 1, g));
+    gfree(g);
+}
+
 static HEvent *receive(CPU *cpu, uint32_t n, uint32_t list, double timeout, int pull) {
     /* The game pumps events with a 1 ms timeout several times per frame and per
      * loading step (PeekMessage). Sleeping that long costs far more than 1 ms on a
@@ -235,6 +248,7 @@ static HEvent *receive(CPU *cpu, uint32_t n, uint32_t list, double timeout, int 
     for (;;) {
         double next_timer = fire_timers(cpu);
         plat_pump(0);
+        run_script_python(cpu);
         for (int i = 0; i < g_nq; i++) {
             HEvent *e = g_queue[i];
             if (!matches_list(e, n, list)) continue;
@@ -397,6 +411,10 @@ SHIM(_ReceiveNextEvent) {
     int pull = (uint8_t)ARG(4);
     HEvent *e = receive(cpu, ARG(0), ARG(1), timeout, pull);
     if (!e) { RET(eventLoopTimedOutErr); return; }
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("CIV4_DEBUG_EVENTS") != NULL;
+    if (dbg && e->cls == kEventClassMouse && e->kind != kEventMouseMoved)
+        rt_log("ReceiveNextEvent: mouse kind %u (pull %d)", e->kind, pull);
     if (ARG(5)) W32_(g_mem, ARG(5), e->g);
     RET(noErr);
 }

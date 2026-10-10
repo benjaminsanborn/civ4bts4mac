@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #import <QuartzCore/QuartzCore.h>
+#include <malloc/malloc.h>
 #include "cf.h"
 #include <math.h>
 #include "events.h"
@@ -54,11 +55,19 @@ static NSPoint g_mouse_global;
 /* Hang watchdog: if the main thread stops pumping events for 20 s, save a
  * stack sample of the whole process to build/hangs/ (once per stall). */
 static _Atomic double g_heartbeat;
+size_t rt_guest_heap_used(void);
+uint32_t rt_cf_proxy_count(void);
 static void *watchdog(void *unused) {
     (void)unused;
-    int reported = 0;
+    int reported = 0, memstats = getenv("CIV4_MEMSTATS") != NULL, tick = 0;
     for (;;) {
         sleep(5);
+        if (memstats && ++tick % 6 == 0) {
+            malloc_statistics_t ms;
+            malloc_zone_statistics(NULL, &ms);
+            rt_log("mem: guest heap %zu MB, host malloc %zu MB, CF proxies %u", rt_guest_heap_used() >> 20,
+                   ms.size_in_use >> 20, rt_cf_proxy_count());
+        }
         double idle = CACurrentMediaTime() - g_heartbeat;
         if (idle < 20) { reported = 0; continue; }
         if (reported) continue;
@@ -274,9 +283,9 @@ static void post_key(NSEvent *ev, uint32_t kind) {
 
 /* ---- scripted input: CIV4_INPUT="SECS:CMD ARGS;..." ----
  * Commands (coordinates in game screen space):
- *   move X,Y   click X,Y   rclick X,Y   key TEXT   keycode N   command HICM (e.g. quit)   quit
+ *   move X,Y   click X,Y   rclick X,Y   key TEXT   keycode N   command HICM (e.g. quit)   py CODE   quit
  * Seconds count from the first event pump. Real input is ignored while a script runs. */
-typedef struct { double t; char cmd[16]; char arg[64]; } ScriptStep;
+typedef struct { double t; char cmd[16]; char arg[256]; } ScriptStep;
 static ScriptStep *g_script;
 static int g_script_n, g_script_pos;
 static double g_script_t0;
@@ -302,7 +311,7 @@ static void script_load(void) {
         g_script = realloc(g_script, sizeof *g_script * (size_t)(g_script_n + 1));
         ScriptStep *st = &g_script[g_script_n];
         memset(st, 0, sizeof *st);
-        if (sscanf(tok, " %lf:%15s %63[^\n]", &st->t, st->cmd, st->arg) >= 2) g_script_n++;
+        if (sscanf(tok, " %lf:%15s %255[^\n]", &st->t, st->cmd, st->arg) >= 2) g_script_n++;
     }
     free(copy);
     g_script_t0 = ev_now();
@@ -331,9 +340,34 @@ static void script_mouse(uint32_t kind, uint16_t button, NSPoint at) {
     post_mouse_at(w, kind, button, at, 0, delta, button ? 1 : 0);
 }
 
+/* "py CODE": run Python in the game (the event loop calls it on the main thread). */
+static char g_pending_python[256];
+int plat_take_python(char *out, size_t n) {
+    if (!g_pending_python[0]) return 0;
+    strlcpy(out, g_pending_python, n);
+    g_pending_python[0] = 0;
+    return 1;
+}
+
 static void post_command(uint32_t command);
+/* The game takes clicks only in its active window; a scripted run's app may
+ * never become frontmost, so tell the game its window is active. */
+static void script_activate(void) {
+    HWindow *w = display_window();
+    if (!w && [g_windows count]) w = [g_windows[0] pointerValue];
+    if (!w) return;
+    g_focus = w;
+    ev_set_focus_target(w->target);
+    HEvent *e = ev_create(kEventClassWindow, kEventWindowActivated);
+    ev_set_param(e, kEventParamDirectObject, typeWindowRef, &w->g, 4);
+    ev_set_param(e, kEventParamWindowRef, typeWindowRef, &w->g, 4);
+    ev_post(e);
+    ev_release(e);
+}
+
 static void script_step(ScriptStep *st) {
     rt_log("input script t=%.1f: %s %s", st->t, st->cmd, st->arg);
+    if (strcmp(st->cmd, "move") && strcmp(st->cmd, "py") && strcmp(st->cmd, "quit")) script_activate();
     double x = 0, y = 0;
     sscanf(st->arg, "%lf,%lf", &x, &y);
     NSPoint at = NSMakePoint(x, y);
@@ -367,6 +401,8 @@ static void script_step(ScriptStep *st) {
         NSString *ch = code == 36 ? @"\r" : code == 53 ? @"\x1b" : @"";
         post_key_raw(kEventRawKeyDown, (uint32_t)code, 0, ch, ch);
         post_key_raw(kEventRawKeyUp, (uint32_t)code, 0, ch, ch);
+    } else if (!strcmp(st->cmd, "py")) {
+        strlcpy(g_pending_python, st->arg, sizeof g_pending_python);
     } else if (!strcmp(st->cmd, "command") && strlen(st->arg) == 4) {
         post_command(FOURCC(st->arg[0], st->arg[1], st->arg[2], st->arg[3]));
     } else if (!strcmp(st->cmd, "quit")) {
@@ -521,7 +557,7 @@ void plat_mouse_global(int16_t *v, int16_t *h) {
 }
 - (void)windowDidResignKey:(NSNotification *)n {
     HWindow *w = hwindow_for([n object]);
-    if (!w) return;
+    if (!w || g_scripted) return; /* scripted runs keep the game window active */
     HEvent *e = ev_create(kEventClassWindow, kEventWindowDeactivated);
     ev_set_param(e, kEventParamDirectObject, typeWindowRef, &w->g, 4);
     ev_set_param(e, kEventParamWindowRef, typeWindowRef, &w->g, 4);
@@ -618,6 +654,17 @@ SHIM(_CreateNewPortForCGDisplayID) {
     }
     plat_display_mode(&display_port->mode_w, &display_port->mode_h);
     layout_display(display_port);
+    if (g_scripted || getenv("CIV4_INPUT")) {
+        /* Scripted runs: the app may not be frontmost (macOS won't let it take
+         * focus), but the game only takes clicks in an active window. */
+        g_focus = display_port;
+        ev_set_focus_target(display_port->target);
+        HEvent *e = ev_create(kEventClassWindow, kEventWindowActivated);
+        ev_set_param(e, kEventParamDirectObject, typeWindowRef, &display_port->g, 4);
+        ev_set_param(e, kEventParamWindowRef, typeWindowRef, &display_port->g, 4);
+        ev_post(e);
+        ev_release(e);
+    }
     rt_log("CreateNewPortForCGDisplayID: fullscreen %dx%d", display_port->mode_w, display_port->mode_h);
     RET(display_port->port);
 }
@@ -787,6 +834,9 @@ SHIM(_GetCurrentEventButtonState) { RET(g_buttons); }
 SHIM(_GetGlobalMouse) {
     int16_t v, h;
     plat_mouse_global(&v, &h);
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("CIV4_DEBUG_EVENTS") != NULL;
+    if (dbg && (g_buttons || dbg++ % 600 == 1)) rt_log("GetGlobalMouse -> %d,%d (buttons %u, scripted %d)", h, v, g_buttons, g_scripted);
     W16_(g_mem, ARG(0), (uint16_t)v);
     W16_(g_mem, ARG(0) + 2, (uint16_t)h);
 }
@@ -893,6 +943,9 @@ SHIM(_QDUnregisterNamedPixMapCursur) {
 uint32_t qd_current_port(void);
 static void port_origin(int16_t *top, int16_t *left) {
     *top = *left = 0;
+    /* Fullscreen: the game's coordinate space is the display; its other
+     * (hidden) windows' host positions don't apply. */
+    if (display_window()) return;
     HWindow *w = gh_get(qd_current_port(), TAG_PORT);
     if (!w || w->mode_w) return;
     NSWindow *nw = (__bridge NSWindow *)w->ns;

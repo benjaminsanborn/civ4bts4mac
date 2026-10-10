@@ -3,7 +3,11 @@
  * A guest CF object is an 8-byte proxy {CF_PROXY_ISA, index} allocated in the
  * guest heap; the index selects a retained host CFTypeRef. The proxy for a
  * given host object is unique, so pointer comparisons in guest code still
- * work. Proxies (and their host objects) are never freed for now.
+ * work. The table holds one reference to each host object; a periodic sweep
+ * drops entries whose host object has no other references (the guest has
+ * released it, so under real CF it would already be gone) and frees their
+ * proxies. Without that, every XML node and string the game ever touched
+ * stayed alive (millions within minutes).
  */
 #include "cf.h"
 
@@ -16,7 +20,10 @@
 
 static pthread_mutex_t g_cf_lock = PTHREAD_MUTEX_INITIALIZER;
 static CFTypeRef *g_tab;
+static uint32_t *g_tab_guest; /* guest address for each entry (proxy or constant string) */
 static uint32_t g_tab_n, g_tab_cap;
+static uint32_t *g_tab_free, g_nfree; /* recycled indices */
+static uint32_t g_live, g_sweep_at = 1u << 17;
 
 /* Open-addressing map: host pointer -> guest proxy, and guest constant string -> host. */
 typedef struct { uintptr_t k; uint32_t v; } Slot;
@@ -45,16 +52,91 @@ static void map_put(Map *m, uintptr_t k, uint32_t v) {
     m->s[i].v = v;
 }
 
+/* Delete with backward shift (linear probing). */
+static void map_del(Map *m, uintptr_t k) {
+    if (!m->cap) return;
+    size_t mask = m->cap - 1, i = (k * 0x9E3779B97F4A7C15ull) & mask;
+    while (m->s[i].k && m->s[i].k != k) i = (i + 1) & mask;
+    if (!m->s[i].k) return;
+    m->n--;
+    for (size_t j = i;;) {
+        j = (j + 1) & mask;
+        if (!m->s[j].k) break;
+        size_t h = (m->s[j].k * 0x9E3779B97F4A7C15ull) & mask;
+        if (i <= j ? (h > i && h <= j) : (h > i || h <= j)) continue;
+        m->s[i] = m->s[j];
+        i = j;
+    }
+    m->s[i].k = 0;
+    m->s[i].v = 0;
+}
+
 static Map g_host2guest, g_conststr;
 static uint32_t g_cfstr_isa;
 
-static uint32_t tab_add(CFTypeRef h) {
+static uint32_t tab_add(CFTypeRef h, uint32_t guest) {
+    g_live++;
+    if (g_nfree) {
+        uint32_t i = g_tab_free[--g_nfree];
+        g_tab[i] = h;
+        g_tab_guest[i] = guest;
+        return i;
+    }
     if (g_tab_n == g_tab_cap) {
         g_tab_cap = g_tab_cap ? g_tab_cap * 2 : 4096;
         g_tab = realloc(g_tab, g_tab_cap * sizeof *g_tab);
+        g_tab_guest = realloc(g_tab_guest, g_tab_cap * sizeof *g_tab_guest);
+        g_tab_free = realloc(g_tab_free, g_tab_cap * sizeof *g_tab_free);
     }
     g_tab[g_tab_n] = h;
+    g_tab_guest[g_tab_n] = guest;
     return g_tab_n++;
+}
+
+/* CIV4_SWEEP_DEBUG: poison swept proxies instead of freeing them, and keep
+ * per-object guest copies, to find guest uses of released objects. */
+#define SWEPT_ISA 0x5EE7CF00u
+static int sweep_debug(void) {
+    static int d = -1;
+    if (d < 0) d = getenv("CIV4_SWEEP_DEBUG") != NULL;
+    return d;
+}
+int cf_sweep_debug(void) { return sweep_debug(); }
+
+static void (*g_sweep_hooks[8])(CFTypeRef);
+static int g_nsweep_hooks;
+void cf_on_sweep(void (*fn)(CFTypeRef)) { g_sweep_hooks[g_nsweep_hooks++] = fn; }
+static void forget_host(CFTypeRef h);
+
+/* Drop proxies whose host object is referenced only by this table. Tagged
+ * pointers (no real retain count) and constant strings are kept. */
+static void sweep(void) {
+    uint32_t dropped = 0;
+    for (uint32_t i = 0; i < g_tab_n; i++) {
+        CFTypeRef h = g_tab[i];
+        if (!h || (intptr_t)h < 0) continue;
+        uint32_t g = g_tab_guest[i];
+        if (R32_(g_mem, g) != CF_PROXY_ISA) continue;
+        if (CFGetRetainCount(h) != 1) continue;
+        map_del(&g_host2guest, (uintptr_t)h);
+        forget_host(h);
+        for (int k = 0; k < g_nsweep_hooks; k++) g_sweep_hooks[k](h);
+        if (sweep_debug()) {
+            W32_(g_mem, g, SWEPT_ISA); /* keep the proxy: cf_in reports any later use */
+        } else {
+            W32_(g_mem, g, 0); /* a stale guest use then fails loudly in cf_in */
+            gfree(g);
+        }
+        CFRelease(h);
+        g_tab[i] = NULL;
+        g_tab_free[g_nfree++] = i;
+        g_live--;
+        dropped++;
+    }
+    g_sweep_at = g_live * 2 + (1u << 17);
+    static int debug = -1;
+    if (debug < 0) debug = getenv("CIV4_MEMSTATS") != NULL;
+    if (debug) rt_log("cf sweep: dropped %u, %u live", dropped, g_live);
 }
 
 CFTypeRef cf_in(uint32_t g) {
@@ -74,13 +156,14 @@ CFTypeRef cf_in(uint32_t g) {
                 h = CFStringCreateWithBytes(NULL, PTR(chars), (CFIndex)len * 2, kCFStringEncodingUTF16LE, false);
             else
                 h = CFStringCreateWithBytes(NULL, PTR(chars), (CFIndex)len, kCFStringEncodingMacRoman, false);
-            map_put(&g_conststr, g, tab_add(h));
+            map_put(&g_conststr, g, tab_add(h, g));
             /* Constant strings map back to themselves so identity holds. */
             map_put(&g_host2guest, (uintptr_t)h, g);
         }
         pthread_mutex_unlock(&g_cf_lock);
         return h;
     }
+    if (isa == SWEPT_ISA) rt_fatal("guest used a swept CF proxy %08x", g);
     rt_fatal("not a CF object: guest %08x (isa %08x)", g, isa);
 }
 
@@ -92,10 +175,13 @@ uint32_t cf_out(CFTypeRef h) {
     if (g) {
         r = *g;
     } else {
+        static int no_sweep = -1;
+        if (no_sweep < 0) no_sweep = getenv("CIV4_NO_SWEEP") != NULL;
+        if (!g_nfree && g_live >= g_sweep_at && !no_sweep) sweep();
         CFRetain(h);
         r = gmalloc(8);
         W32_(g_mem, r, CF_PROXY_ISA);
-        W32_(g_mem, r + 4, tab_add(h));
+        W32_(g_mem, r + 4, tab_add(h, r));
         map_put(&g_host2guest, (uintptr_t)h, r);
     }
     pthread_mutex_unlock(&g_cf_lock);
@@ -570,3 +656,15 @@ const ShimDef shims_cf[] = {
     SHIM_ENTRY(_CFUUIDCreate), SHIM_ENTRY(_CFUUIDGetUUIDBytes),
     {0, 0},
 };
+
+uint32_t rt_cf_proxy_count(void) { return g_live; }
+
+/* Per-object state kept by this file (called by the sweep, lock held). */
+static void forget_host(CFTypeRef h) {
+    uint32_t *bytes = map_find(&g_data_bytes, (uintptr_t)h);
+    if (bytes) {
+        if (!sweep_debug()) gfree(*bytes);
+        map_del(&g_data_bytes, (uintptr_t)h);
+    }
+    map_del(&g_raw_collections, (uintptr_t)h);
+}
