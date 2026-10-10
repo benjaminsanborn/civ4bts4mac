@@ -502,6 +502,22 @@ void plat_pump(double timeout) {
         stalled = 1; /* test the watchdog: stall the main thread once */
         sleep(28);
     }
+    static double focus_test = -1; /* CIV4_TEST_FOCUS=T: hide the app T s after launch, bring it back 5 s later */
+    if (focus_test < 0)
+        focus_test = getenv("CIV4_TEST_FOCUS") ? CACurrentMediaTime() + atof(getenv("CIV4_TEST_FOCUS")) : 0;
+    if (focus_test > 0 && CACurrentMediaTime() > focus_test) {
+        static int phase;
+        if (phase == 0) {
+            phase = 1;
+            rt_log("focus test: hiding");
+            [NSApp hide:nil];
+        } else if (phase == 1 && CACurrentMediaTime() > focus_test + 5) {
+            phase = 2;
+            rt_log("focus test: unhiding");
+            [NSApp unhide:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        }
+    }
     static int script_init;
     if (!script_init) {
         script_init = 1;
@@ -555,8 +571,12 @@ void plat_mouse_global(int16_t *v, int16_t *h) {
     ev_post(e);
     ev_release(e);
 }
-- (void)windowDidResignKey:(NSNotification *)n {
-    HWindow *w = hwindow_for([n object]);
+/* The game pauses while its window is inactive, so it is deactivated only
+ * when the app loses focus, not when key focus moves between its own windows
+ * (the fullscreen port takes it from the game's helper windows at startup). */
+- (void)appDidResignActive:(NSNotification *)n {
+    (void)n;
+    HWindow *w = g_focus;
     if (!w || g_scripted) return; /* scripted runs keep the game window active */
     HEvent *e = ev_create(kEventClassWindow, kEventWindowDeactivated);
     ev_set_param(e, kEventParamDirectObject, typeWindowRef, &w->g, 4);
@@ -577,6 +597,18 @@ void plat_mouse_global(int16_t *v, int16_t *h) {
 }
 @end
 
+static WinDelegate *win_delegate(void) {
+    static WinDelegate *delegate;
+    if (!delegate) {
+        delegate = [WinDelegate new];
+        [[NSNotificationCenter defaultCenter] addObserver:delegate
+                                                 selector:@selector(appDidResignActive:)
+                                                     name:NSApplicationDidResignActiveNotification
+                                                   object:nil];
+    }
+    return delegate;
+}
+
 /* ---- Window Manager shims ---- */
 SHIM(_CreateNewWindow) {
     /* (WindowClass, WindowAttributes, const Rect *bounds, WindowRef *out) */
@@ -596,9 +628,7 @@ SHIM(_CreateNewWindow) {
                                                        defer:NO];
     [nw setReleasedWhenClosed:NO];
     [nw setAcceptsMouseMovedEvents:YES];
-    static WinDelegate *delegate;
-    if (!delegate) delegate = [WinDelegate new];
-    [nw setDelegate:delegate];
+    [nw setDelegate:win_delegate()];
     GameView *view = [[GameView alloc] initWithFrame:[[nw contentView] bounds]];
     [view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
     [nw setContentView:view];
@@ -634,6 +664,7 @@ SHIM(_CreateNewPortForCGDisplayID) {
         [NSApp setPresentationOptions:NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar];
         [nw setReleasedWhenClosed:NO];
         [nw setAcceptsMouseMovedEvents:YES];
+        [nw setDelegate:win_delegate()];
         [nw setBackgroundColor:[NSColor blackColor]];
         /* Black backdrop; the GL view inside it is sized to the mode's aspect ratio. */
         NSView *backdrop = [[NSView alloc] initWithFrame:[[nw contentView] bounds]];
