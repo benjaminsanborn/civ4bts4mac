@@ -1008,6 +1008,14 @@ SHIM(_CGSetLocalEventsSuppressionInterval) { RET(0); }
 
 void NSBeep_c(void) { NSBeep(); }
 
+/* LSOpenCFURLRef(CFURLRef, CFURLRef *launchedURL): web links (ShellExecute). */
+SHIM(_LSOpenCFURLRef) {
+    NSURL *u = (__bridge NSURL *)CFI(0);
+    BOOL ok = u && [[NSWorkspace sharedWorkspace] openURL:u];
+    if (ARG(1)) W32_(g_mem, ARG(1), 0);
+    RET(ok ? 0 : -10814 /* kLSApplicationNotFoundErr */);
+}
+
 /* ---- menu bar ---- */
 SHIM(_HideMenuBar) { [NSMenu setMenuBarVisible:NO]; }
 SHIM(_ShowMenuBar) { [NSMenu setMenuBarVisible:YES]; }
@@ -1035,6 +1043,6 @@ const ShimDef shims_platform[] = {
     SHIM_ENTRY(_QDSetNamedPixMapCursor), SHIM_ENTRY(_QDUnregisterNamedPixMapCursur), SHIM_ENTRY(_GlobalToLocal),
     SHIM_ENTRY(_LocalToGlobal), SHIM_ENTRY(_KeyTranslate), SHIM_ENTRY(_YieldToAnyThread),
     SHIM_ENTRY(_DisableMenuCommand), SHIM_ENTRY(_EnableMenuCommand),
-    SHIM_ENTRY(_HideMenuBar), SHIM_ENTRY(_ShowMenuBar), SHIM_ENTRY(_IsMenuBarVisible), SHIM_ENTRY(_GetMBarHeight),
+    SHIM_ENTRY(_LSOpenCFURLRef), SHIM_ENTRY(_HideMenuBar), SHIM_ENTRY(_ShowMenuBar), SHIM_ENTRY(_IsMenuBarVisible), SHIM_ENTRY(_GetMBarHeight),
     {0, 0},
 };
