@@ -96,13 +96,17 @@ static inline void WF64_(uint8_t *M, uint32_t a, double v) { memcpy(M + a, &v, 8
 #define FPUSH(v) do { double v_ = (v); cpu->ftop = (cpu->ftop - 1) & 7; cpu->st[cpu->ftop] = v_; } while (0)
 #define FPOP() (cpu->ftop = (cpu->ftop + 1) & 7)
 
+/* fistp: round per the control word; NaN / out of range gives the "integer
+ * indefinite" value, as on x86 (a plain C cast would be undefined). */
 static inline int64_t rt_fround(CPU *cpu, double v) {
     switch ((cpu->fcw >> 10) & 3) {
-    case 0: return (int64_t)nearbyint(v);
-    case 1: return (int64_t)floor(v);
-    case 2: return (int64_t)ceil(v);
-    default: return (int64_t)trunc(v);
+    case 0: v = nearbyint(v); break;
+    case 1: v = floor(v); break;
+    case 2: v = ceil(v); break;
+    default: v = trunc(v); break;
     }
+    if (!(v >= -9223372036854775808.0 && v < 9223372036854775808.0)) return INT64_MIN;
+    return (int64_t)v;
 }
 
 /* 80-bit x87 extended values, converted to/from double (precision is lost). */

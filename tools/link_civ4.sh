@@ -17,6 +17,6 @@ for f in runtime/*.m; do
     o="build/rt/$(basename "$f" .m).o"
     [ "$o" -nt "$f" ] && [ "$o" -nt runtime/shim.h ] || clang -c $CFLAGS -fobjc-arc "$f" -o "$o"
 done
-clang++ -O2 -g ${LDFLAGS:-} build/rt/*.o ${LIBGAME:-build/libgame.a} -framework CoreFoundation -framework Cocoa -framework OpenGL \
+clang++ -O2 -g ${LDFLAGS--flto=thin -Wl,-cache_path_lto,build/lto-cache} build/rt/*.o ${LIBGAME:-build/libgame.a} -framework CoreFoundation -framework Cocoa -framework OpenGL \
     -framework CoreGraphics -framework CoreText -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -framework ImageIO -framework OpenAL -Wl,-export_dynamic -o ${OUT:-build/civ4}
 echo "linked ${OUT:-build/civ4}"
