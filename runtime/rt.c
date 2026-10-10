@@ -307,21 +307,43 @@ static const StubEntry *find_stub(uint32_t target) {
     return (lo < g_stubs_len && g_stubs[lo].addr == target) ? &g_stubs[lo] : NULL;
 }
 
+/* Where an indirect call lands: a recompiled function (table index), or an
+ * import (id | DISPATCH_IMPORT), whether reached directly through the import
+ * table or through a dyld stub. Resolutions are cached like rt_lookup's, so
+ * calls into imports (libc, libstdc++) skip both binary searches. */
+#define DISPATCH_IMPORT 0x80000000u
+static _Atomic uint64_t g_dispatch_cache[1u << 16];
+
+static int resolve(uint32_t target, uint32_t *out) {
+    for (int depth = 0; depth < 4; depth++) {
+        uint32_t lo = 0, hi = g_functab_len;
+        while (lo < hi) {
+            uint32_t mid = (lo + hi) / 2;
+            if (g_functab[mid].addr < target) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo < g_functab_len && g_functab[lo].addr == target) { *out = lo; return 1; }
+        if (target >= IMPORT_BASE && target < IMPORT_BASE + 4 * (g_import_count + g_dyn_count) && !(target & 3)) {
+            *out = (target - IMPORT_BASE) / 4 | DISPATCH_IMPORT;
+            return 1;
+        }
+        const StubEntry *st = find_stub(target);
+        if (!st) return 0;
+        if (st->is_import) { *out = st->target | DISPATCH_IMPORT; return 1; }
+        target = st->target;
+    }
+    return 0;
+}
+
 void rt_dispatch(CPU *cpu, uint32_t target) {
-    GuestFn fn = rt_lookup(target);
-    if (fn) {
-        fn(cpu);
-        return;
+    _Atomic uint64_t *slot = &g_dispatch_cache[(target * 2654435761u) >> 16];
+    uint64_t v = atomic_load_explicit(slot, memory_order_relaxed);
+    uint32_t r;
+    if ((uint32_t)(v >> 32) == target && target) r = (uint32_t)v;
+    else {
+        if (!resolve(target, &r)) { rt_unimpl(cpu, target, "dispatch miss"); return; }
+        atomic_store_explicit(slot, (uint64_t)target << 32 | r, memory_order_relaxed);
     }
-    if (target >= IMPORT_BASE && target < IMPORT_BASE + 4 * (g_import_count + g_dyn_count) && !(target & 3)) {
-        rt_import(cpu, (target - IMPORT_BASE) / 4);
-        return;
-    }
-    const StubEntry *st = find_stub(target);
-    if (st) {
-        if (st->is_import) rt_import(cpu, st->target);
-        else rt_dispatch(cpu, st->target);
-        return;
-    }
-    rt_unimpl(cpu, target, "dispatch miss");
+    if (r & DISPATCH_IMPORT) rt_import(cpu, r & ~DISPATCH_IMPORT);
+    else g_functab[r].fn(cpu);
 }

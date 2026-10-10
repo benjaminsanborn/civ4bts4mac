@@ -24,7 +24,7 @@ for ((t = 60; t < 240; t += 10)); do SCRIPT="$SCRIPT;$t:keycode 36;$((t + 2)):$S
 for ((t = 61; t < 240 + 60 * TURNS; t += 2)); do SCRIPT="$SCRIPT;$t:$LOG"; done
 
 CIV4_LENIENT=1 CIV4_FPS=1 CIV4_MUTE=1 CIV4_PREFS_DOMAIN=civ4.test HOME="$ROOT/build/home" \
-    CIV4_INPUT="$SCRIPT" ./build/civ4 > "$OUT/run_$NAME.log" 2>&1 &
+    CIV4_INPUT="$SCRIPT" "${CIV4_BIN:-./build/civ4}" > "$OUT/run_$NAME.log" 2>&1 &
 PID=$!
 start=$(date +%s)
 first=""
