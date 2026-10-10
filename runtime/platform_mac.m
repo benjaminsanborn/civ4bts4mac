@@ -570,8 +570,9 @@ static void note_read(void) {
     g_last_read = now;
 }
 void plat_pump_busy(void) {
-    static int busy;
-    if (busy || !g_last_read || CACurrentMediaTime() - g_last_read < 0.1) return;
+    static int busy, off = -1; /* CIV4_NO_BUSY_PUMP=1 turns this off, for A/B tests */
+    if (off < 0) off = getenv("CIV4_NO_BUSY_PUMP") != NULL;
+    if (off || busy || !g_last_read || CACurrentMediaTime() - g_last_read < 0.1) return;
     busy = 1;
     note_read();
     @autoreleasepool {
