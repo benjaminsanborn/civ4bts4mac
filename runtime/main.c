@@ -378,7 +378,7 @@ static void load_world(const char *path) {
 }
 
 extern const ShimDef shims_libc[], shims_stdio[], shims_pthread[], shims_cf[], shims_files[], shims_posix[], shims_carbon[], shims_dyld[], shims_events[],
-    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[], shims_movies[], shims_unwind[], shims_openal[], shims_net[], shims_cg_image[];
+    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[], shims_movies[], shims_unwind[], shims_openal[], shims_net[], shims_cg_image[], shims_sound_converter[];
 
 static void register_all_shims(void) {
     rt_register_shims(shims_libc);
@@ -402,6 +402,7 @@ static void register_all_shims(void) {
     rt_register_shims(shims_openal);
     rt_register_shims(shims_net);
     rt_register_shims(shims_cg_image);
+    rt_register_shims(shims_sound_converter);
     rt_register_shims(shims_unwind);
     uint32_t have = 0;
     for (uint32_t i = 0; i < g_import_count; i++) have += g_import_shims[i] != NULL;
