@@ -501,8 +501,9 @@ void plat_pump(double timeout) {
         pthread_create(&t, NULL, watchdog, NULL);
         pthread_detach(t);
     }
-    static int stalled;
-    if (!stalled && getenv("CIV4_TEST_STALL") && CACurrentMediaTime() - g_heartbeat < 1 && ev_now() > 10) {
+    static int stalled = -1;
+    if (stalled < 0) stalled = !getenv("CIV4_TEST_STALL");
+    if (!stalled && CACurrentMediaTime() - g_heartbeat < 1 && ev_now() > 10) {
         stalled = 1; /* test the watchdog: stall the main thread once */
         sleep(28);
     }
@@ -536,6 +537,14 @@ void plat_pump(double timeout) {
         script_load();
     }
     script_run();
+    /* The game polls (PeekMessage) many times per frame, and each AppKit poll
+     * costs tens of microseconds: about 10% of the main thread in late-game AI
+     * turns. The window server queues events meanwhile, so poll at most every
+     * 2 ms; waits (timeout > 0) always go to AppKit. */
+    static double last_poll;
+    double now = CACurrentMediaTime();
+    if (timeout <= 0 && now - last_poll < 0.002) return;
+    last_poll = now;
     note_read();
     if ((g_script_pos < g_script_n || g_script_up || g_keystep_pos < g_nkeysteps) && timeout > 0.01) timeout = 0.01;
     @autoreleasepool {
