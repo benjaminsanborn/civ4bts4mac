@@ -250,6 +250,15 @@ typedef struct { double t; char cmd[16]; char arg[64]; } ScriptStep;
 static ScriptStep *g_script;
 static int g_script_n, g_script_pos;
 static double g_script_t0;
+/* Typed keys are played out over time like real typing: the game also polls
+ * the live key map (GetKeys), which must match the events it is processing. */
+typedef struct { double t; uint32_t kind, code, mods; char ch, raw; } KeyStep;
+static KeyStep g_keysteps[1024];
+static int g_nkeysteps, g_keystep_pos;
+static void queue_key(double t, uint32_t kind, uint32_t code, uint32_t mods, char ch, char raw) {
+    if (g_nkeysteps == 1024) return;
+    g_keysteps[g_nkeysteps++] = (KeyStep){t, kind, code, mods, ch, raw};
+}
 static uint16_t g_script_up; /* button to release at g_script_up_t */
 static double g_script_up_t;
 
@@ -315,13 +324,12 @@ static void script_step(ScriptStep *st) {
             if (*c >= 'A' && *c <= 'Z') base = (char)(*c + 32), mods = shiftKey;
             for (int k = 0; shifted[k]; k += 2)
                 if (shifted[k] == *c) base = shifted[k + 1], mods = shiftKey;
-            NSString *ch = [NSString stringWithFormat:@"%c", *c];
-            NSString *raw = [NSString stringWithFormat:@"%c", base];
-            int code = keycode_for((unichar)base);
-            if (mods) post_key_raw(kEventRawKeyModifiersChanged, 56, mods, @"", @"");
-            post_key_raw(kEventRawKeyDown, (uint32_t)code, mods, ch, raw);
-            post_key_raw(kEventRawKeyUp, (uint32_t)code, mods, ch, raw);
-            if (mods) post_key_raw(kEventRawKeyModifiersChanged, 56, 0, @"", @"");
+            uint32_t code = (uint32_t)keycode_for((unichar)base);
+            double t = g_nkeysteps > g_keystep_pos ? g_keysteps[g_nkeysteps - 1].t : ev_now();
+            if (mods) queue_key(t += 0.03, kEventRawKeyModifiersChanged, 56, mods, 0, 0);
+            queue_key(t += 0.03, kEventRawKeyDown, code, mods, *c, base);
+            queue_key(t += 0.03, kEventRawKeyUp, code, mods, *c, base);
+            if (mods) queue_key(t += 0.03, kEventRawKeyModifiersChanged, 56, 0, 0, 0);
         }
     } else if (!strcmp(st->cmd, "keycode")) {
         int code = atoi(st->arg);
@@ -335,6 +343,12 @@ static void script_step(ScriptStep *st) {
 }
 
 static void script_run(void) {
+    while (g_keystep_pos < g_nkeysteps && ev_now() >= g_keysteps[g_keystep_pos].t) {
+        KeyStep *k = &g_keysteps[g_keystep_pos++];
+        NSString *ch = k->ch ? [NSString stringWithFormat:@"%c", k->ch] : @"";
+        NSString *raw = k->raw ? [NSString stringWithFormat:@"%c", k->raw] : @"";
+        post_key_raw(k->kind, k->code, k->mods, ch, raw);
+    }
     if (g_script_up && ev_now() >= g_script_up_t) {
         g_buttons &= ~(uint32_t)g_script_up;
         script_mouse(kEventMouseUp, g_script_up, g_script_mouse);
@@ -386,7 +400,7 @@ void plat_pump(double timeout) {
         script_load();
     }
     script_run();
-    if ((g_script_pos < g_script_n || g_script_up) && timeout > 0.05) timeout = 0.05;
+    if ((g_script_pos < g_script_n || g_script_up || g_keystep_pos < g_nkeysteps) && timeout > 0.01) timeout = 0.01;
     @autoreleasepool {
         NSDate *until = timeout > 0 ? [NSDate dateWithTimeIntervalSinceNow:timeout] : [NSDate distantPast];
         for (;;) {
