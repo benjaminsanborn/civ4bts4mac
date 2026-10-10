@@ -258,6 +258,15 @@ SHIM(_aglSwapBuffers) {
     if (!c) return;
     maybe_capture_frame();
     [c->ctx flushBuffer];
+    /* Nothing paces frames while the window is hidden (no vsync): cap at 30 fps
+     * so a game left in the background doesn't spin. */
+    static double last_swap;
+    double now_s = CACurrentMediaTime();
+    HWindow *hw = gh_get(c->port, TAG_PORT);
+    NSWindow *nw = hw ? (__bridge NSWindow *)hw->ns : nil;
+    if (nw && !([nw occlusionState] & NSWindowOcclusionStateVisible) && now_s - last_swap < 1.0 / 30)
+        usleep((useconds_t)((1.0 / 30 - (now_s - last_swap)) * 1e6));
+    last_swap = CACurrentMediaTime();
     /* CIV4_FPS: every 5 seconds, log the frame rate and the slow frames (hitches). */
     static int fps = -1, frames, slow;
     static double t0, last, worst;

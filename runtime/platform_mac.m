@@ -244,7 +244,7 @@ static void post_key(NSEvent *ev, uint32_t kind) {
 
 /* ---- scripted input: CIV4_INPUT="SECS:CMD ARGS;..." ----
  * Commands (coordinates in game screen space):
- *   move X,Y   click X,Y   rclick X,Y   key TEXT   keycode N   quit
+ *   move X,Y   click X,Y   rclick X,Y   key TEXT   keycode N   command HICM (e.g. quit)   quit
  * Seconds count from the first event pump. Real input is ignored while a script runs. */
 typedef struct { double t; char cmd[16]; char arg[64]; } ScriptStep;
 static ScriptStep *g_script;
@@ -301,6 +301,7 @@ static void script_mouse(uint32_t kind, uint16_t button, NSPoint at) {
     post_mouse_at(w, kind, button, at, 0, delta, button ? 1 : 0);
 }
 
+static void post_command(uint32_t command);
 static void script_step(ScriptStep *st) {
     rt_log("input script t=%.1f: %s %s", st->t, st->cmd, st->arg);
     double x = 0, y = 0;
@@ -336,6 +337,8 @@ static void script_step(ScriptStep *st) {
         NSString *ch = code == 36 ? @"\r" : code == 53 ? @"\x1b" : @"";
         post_key_raw(kEventRawKeyDown, (uint32_t)code, 0, ch, ch);
         post_key_raw(kEventRawKeyUp, (uint32_t)code, 0, ch, ch);
+    } else if (!strcmp(st->cmd, "command") && strlen(st->arg) == 4) {
+        post_command(FOURCC(st->arg[0], st->arg[1], st->arg[2], st->arg[3]));
     } else if (!strcmp(st->cmd, "quit")) {
         rt_log("input script: quit");
         exit(0);
@@ -358,8 +361,34 @@ static void script_run(void) {
         script_step(&g_script[g_script_pos++]);
 }
 
+/* Standard Mac commands go to the game's command handler as HICommands. */
+static void post_command(uint32_t command) {
+    uint8_t hc[14] = {0}; /* HICommand {attributes, commandID, {menuRef, menuItemIndex}} */
+    memcpy(hc + 4, &command, 4);
+    HEvent *e = ev_create(kEventClassCommand, 1 /* kEventCommandProcess */);
+    ev_set_param(e, kEventParamDirectObject, FOURCC('h', 'c', 'm', 'd'), hc, sizeof hc);
+    ev_post(e);
+    ev_release(e);
+}
+
+/* Cmd-Q quits through the game (it can confirm or save); Cmd-H hides. */
+static int app_shortcut(NSEvent *ev) {
+    if ([ev type] != NSEventTypeKeyDown || !([ev modifierFlags] & NSEventModifierFlagCommand)) return 0;
+    NSString *k = [[ev charactersIgnoringModifiers] lowercaseString];
+    if ([k isEqualToString:@"q"]) {
+        if (![ev isARepeat]) post_command(FOURCC('q', 'u', 'i', 't'));
+        return 1;
+    }
+    if ([k isEqualToString:@"h"]) {
+        [NSApp hide:nil];
+        return 1;
+    }
+    return 0;
+}
+
 static void translate(NSEvent *ev) {
     if (g_scripted) return;
+    if (app_shortcut(ev)) return;
     switch ([ev type]) {
     case NSEventTypeLeftMouseDown: g_buttons |= 1; post_mouse(ev, kEventMouseDown, 1); break;
     case NSEventTypeLeftMouseUp: g_buttons &= ~1u; post_mouse(ev, kEventMouseUp, 1); break;
@@ -519,7 +548,11 @@ SHIM(_CreateNewPortForCGDisplayID) {
                                                        styleMask:NSWindowStyleMaskBorderless
                                                          backing:NSBackingStoreBuffered
                                                            defer:NO];
-        [nw setLevel:NSMainMenuWindowLevel + 1];
+        /* Normal level, with the Dock and menu bar hidden while the game is
+         * frontmost: Cmd-Tab and other apps keep working. */
+        [nw setLevel:NSNormalWindowLevel];
+        [nw setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
+        [NSApp setPresentationOptions:NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar];
         [nw setReleasedWhenClosed:NO];
         [nw setAcceptsMouseMovedEvents:YES];
         [nw setBackgroundColor:[NSColor blackColor]];
