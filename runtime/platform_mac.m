@@ -101,19 +101,36 @@ static HWindow *hwindow_for(NSWindow *nw) {
     return NULL;
 }
 
-static void add_mouse_params(HEvent *e, NSEvent *ev, HWindow *w) {
-    NSPoint p = [NSEvent mouseLocation];
-    float global[2] = {(float)p.x, (float)(main_screen_height() - p.y)};
-    g_mouse_global = NSMakePoint(global[0], global[1]);
-    ev_set_param(e, kEventParamMouseLocation, typeHIPoint, global, 8);
-    if (w && w->mode_w) {
-        /* Display port: the game sees a screen of mode size at the origin. */
-        NSRect sf = [[NSScreen screens][0] frame];
-        global[0] = (float)((p.x - sf.origin.x) * w->mode_w / sf.size.width);
-        global[1] = (float)((NSMaxY(sf) - p.y) * w->mode_h / sf.size.height);
-        ev_set_param(e, kEventParamMouseLocation, typeHIPoint, global, 8);
-        g_mouse_global = NSMakePoint(global[0], global[1]);
+/* The fullscreen display port, if any: the game then sees a screen of mode size at the origin. */
+static HWindow *display_window(void) {
+    for (NSValue *v in g_windows) {
+        HWindow *w = [v pointerValue];
+        if (w->mode_w) return w;
     }
+    return NULL;
+}
+
+/* Scripted input (CIV4_INPUT) replaces the real mouse and keyboard. */
+static int g_scripted;
+static NSPoint g_script_mouse;
+
+/* Mouse position in game (QuickDraw global) coordinates. */
+static NSPoint game_mouse(void) {
+    if (g_scripted) return g_script_mouse;
+    NSPoint p = [NSEvent mouseLocation];
+    HWindow *d = display_window();
+    if (d) {
+        NSRect sf = [[NSScreen screens][0] frame];
+        return NSMakePoint((p.x - sf.origin.x) * d->mode_w / sf.size.width,
+                           (NSMaxY(sf) - p.y) * d->mode_h / sf.size.height);
+    }
+    return NSMakePoint(p.x, main_screen_height() - p.y);
+}
+
+static void add_mouse_params(HEvent *e, NSPoint at, uint32_t mods, NSPoint delta, HWindow *w) {
+    float global[2] = {(float)at.x, (float)at.y};
+    g_mouse_global = at;
+    ev_set_param(e, kEventParamMouseLocation, typeHIPoint, global, 8);
     if (w) {
         NSRect content = [(__bridge NSWindow *)w->ns contentRectForFrameRect:[(__bridge NSWindow *)w->ns frame]];
         int16_t qd[4];
@@ -123,10 +140,9 @@ static void add_mouse_params(HEvent *e, NSEvent *ev, HWindow *w) {
         ev_set_param(e, kEventParamWindowMouseLocation, typeHIPoint, local, 8);
         ev_set_param(e, kEventParamWindowRef, typeWindowRef, &w->g, 4);
     }
-    uint32_t mods = carbon_modifiers([ev modifierFlags]);
     ev_set_param(e, kEventParamKeyModifiers, typeUInt32, &mods, 4);
-    float delta[2] = {(float)[ev deltaX], (float)[ev deltaY]};
-    ev_set_param(e, kEventParamMouseDelta, typeHIPoint, delta, 8);
+    float d[2] = {(float)delta.x, (float)delta.y};
+    ev_set_param(e, kEventParamMouseDelta, typeHIPoint, d, 8);
 }
 
 /* Mouse events always carry a game window: Carbon handlers read
@@ -138,33 +154,36 @@ static HWindow *event_window(NSEvent *ev) {
     return w;
 }
 
-static void post_mouse(NSEvent *ev, uint32_t kind, uint16_t button) {
-    HWindow *w = event_window(ev);
+static void post_mouse_at(HWindow *w, uint32_t kind, uint16_t button, NSPoint at, uint32_t mods, NSPoint delta,
+                          uint32_t clicks) {
     HEvent *e = ev_create(kEventClassMouse, kind);
-    add_mouse_params(e, ev, w);
+    add_mouse_params(e, at, mods, delta, w);
     if (button) {
         ev_set_param(e, kEventParamMouseButton, typeMouseButton, &button, 2);
-        uint32_t clicks = (uint32_t)[ev clickCount];
         ev_set_param(e, kEventParamClickCount, typeUInt32, &clicks, 4);
     }
     ev_post(e);
     ev_release(e);
 }
 
-static void post_key(NSEvent *ev, uint32_t kind) {
-    uint32_t code = [ev keyCode], mods = carbon_modifiers([ev modifierFlags]), kbd = 40;
+static void post_mouse(NSEvent *ev, uint32_t kind, uint16_t button) {
+    post_mouse_at(event_window(ev), kind, button, game_mouse(), carbon_modifiers([ev modifierFlags]),
+                  NSMakePoint([ev deltaX], [ev deltaY]), button ? (uint32_t)[ev clickCount] : 0);
+}
+
+static void post_key_raw(uint32_t kind, uint32_t code, uint32_t mods, NSString *chars, NSString *raw) {
+    uint32_t kbd = 40;
     if (code < 128) {
         if (kind == kEventRawKeyUp) g_keymap[code >> 3] &= ~(1u << (code & 7));
         else g_keymap[code >> 3] |= 1u << (code & 7);
     }
-    NSString *chars = kind == kEventRawKeyModifiersChanged ? @"" : [ev characters];
+    if (kind == kEventRawKeyModifiersChanged) chars = @"";
     HEvent *e = ev_create(kEventClassKeyboard, kind);
     ev_set_param(e, kEventParamKeyCode, typeUInt32, &code, 4);
     ev_set_param(e, kEventParamKeyModifiers, typeUInt32, &mods, 4);
     ev_set_param(e, kEventParamKeyboardType, typeUInt32, &kbd, 4);
     if (kind != kEventRawKeyModifiersChanged) {
         char mac = 0;
-        NSString *raw = [ev charactersIgnoringModifiers];
         if ([chars length]) mac = (char)[chars characterAtIndex:0];
         else if ([raw length]) mac = (char)[raw characterAtIndex:0];
         ev_set_param(e, kEventParamKeyMacCharCodes, typeChar, &mac, 1);
@@ -178,7 +197,106 @@ static void post_key(NSEvent *ev, uint32_t kind) {
     ev_release(e);
 }
 
+static void post_key(NSEvent *ev, uint32_t kind) {
+    NSString *chars = kind == kEventRawKeyModifiersChanged ? @"" : [ev characters];
+    NSString *raw = kind == kEventRawKeyModifiersChanged ? @"" : [ev charactersIgnoringModifiers];
+    post_key_raw(kind, [ev keyCode], carbon_modifiers([ev modifierFlags]), chars, raw);
+}
+
+/* ---- scripted input: CIV4_INPUT="SECS:CMD ARGS;..." ----
+ * Commands (coordinates in game screen space):
+ *   move X,Y   click X,Y   rclick X,Y   key TEXT   keycode N   quit
+ * Seconds count from the first event pump. Real input is ignored while a script runs. */
+typedef struct { double t; char cmd[16]; char arg[64]; } ScriptStep;
+static ScriptStep *g_script;
+static int g_script_n, g_script_pos;
+static double g_script_t0;
+static uint16_t g_script_up; /* button to release at g_script_up_t */
+static double g_script_up_t;
+
+static void script_load(void) {
+    const char *spec = getenv("CIV4_INPUT");
+    if (!spec || !*spec) return;
+    g_scripted = 1;
+    g_script_mouse = NSMakePoint(0, 0);
+    char *copy = strdup(spec), *save = NULL;
+    for (char *tok = strtok_r(copy, ";", &save); tok; tok = strtok_r(NULL, ";", &save)) {
+        g_script = realloc(g_script, sizeof *g_script * (size_t)(g_script_n + 1));
+        ScriptStep *st = &g_script[g_script_n];
+        memset(st, 0, sizeof *st);
+        if (sscanf(tok, " %lf:%15s %63[^\n]", &st->t, st->cmd, st->arg) >= 2) g_script_n++;
+    }
+    free(copy);
+    g_script_t0 = ev_now();
+}
+
+/* US layout virtual key codes for the characters scripts type. */
+static int keycode_for(unichar c) {
+    static const char rows[] = "asdfhgzxcv\0bqweryt123465=97-80]ou[ip\0lj'k;\\,/nm.";
+    if (c >= 'A' && c <= 'Z') c += 32;
+    if (c == ' ') return 49;
+    if (c == '\r' || c == '\n') return 36;
+    if (c == 27) return 53;
+    if (c == '\t') return 48;
+    for (int k = 0; k < (int)sizeof rows - 1; k++)
+        if (rows[k] == c && c) return k;
+    return 0;
+}
+
+static void script_mouse(uint32_t kind, uint16_t button, NSPoint at) {
+    NSPoint delta = NSMakePoint(at.x - g_script_mouse.x, at.y - g_script_mouse.y);
+    g_script_mouse = at;
+    HWindow *w = display_window();
+    if (!w && [g_windows count]) w = [g_windows[0] pointerValue];
+    if (!w) return;
+    post_mouse_at(w, kind, button, at, 0, delta, button ? 1 : 0);
+}
+
+static void script_step(ScriptStep *st) {
+    rt_log("input script t=%.1f: %s %s", st->t, st->cmd, st->arg);
+    double x = 0, y = 0;
+    sscanf(st->arg, "%lf,%lf", &x, &y);
+    NSPoint at = NSMakePoint(x, y);
+    if (!strcmp(st->cmd, "move")) {
+        script_mouse(kEventMouseMoved, 0, at);
+    } else if (!strcmp(st->cmd, "click") || !strcmp(st->cmd, "rclick")) {
+        uint16_t b = st->cmd[0] == 'r' ? 2 : 1;
+        script_mouse(kEventMouseMoved, 0, at);
+        g_buttons |= b;
+        script_mouse(kEventMouseDown, b, at);
+        g_script_up = b;
+        g_script_up_t = ev_now() + 0.15;
+    } else if (!strcmp(st->cmd, "key")) {
+        for (const char *c = st->arg; *c; c++) {
+            NSString *ch = [NSString stringWithFormat:@"%c", *c];
+            int code = keycode_for((unichar)*c);
+            uint32_t mods = (*c >= 'A' && *c <= 'Z') ? shiftKey : 0;
+            post_key_raw(kEventRawKeyDown, (uint32_t)code, mods, ch, [ch lowercaseString]);
+            post_key_raw(kEventRawKeyUp, (uint32_t)code, mods, ch, [ch lowercaseString]);
+        }
+    } else if (!strcmp(st->cmd, "keycode")) {
+        int code = atoi(st->arg);
+        NSString *ch = code == 36 ? @"\r" : code == 53 ? @"\x1b" : @"";
+        post_key_raw(kEventRawKeyDown, (uint32_t)code, 0, ch, ch);
+        post_key_raw(kEventRawKeyUp, (uint32_t)code, 0, ch, ch);
+    } else if (!strcmp(st->cmd, "quit")) {
+        rt_log("input script: quit");
+        exit(0);
+    }
+}
+
+static void script_run(void) {
+    if (g_script_up && ev_now() >= g_script_up_t) {
+        g_buttons &= ~(uint32_t)g_script_up;
+        script_mouse(kEventMouseUp, g_script_up, g_script_mouse);
+        g_script_up = 0;
+    }
+    while (g_script_pos < g_script_n && ev_now() - g_script_t0 >= g_script[g_script_pos].t)
+        script_step(&g_script[g_script_pos++]);
+}
+
 static void translate(NSEvent *ev) {
+    if (g_scripted) return;
     switch ([ev type]) {
     case NSEventTypeLeftMouseDown: g_buttons |= 1; post_mouse(ev, kEventMouseDown, 1); break;
     case NSEventTypeLeftMouseUp: g_buttons &= ~1u; post_mouse(ev, kEventMouseUp, 1); break;
@@ -193,7 +311,7 @@ static void translate(NSEvent *ev) {
     case NSEventTypeScrollWheel: {
         HWindow *w = event_window(ev);
         HEvent *e = ev_create(kEventClassMouse, kEventMouseWheelMoved);
-        add_mouse_params(e, ev, w);
+        add_mouse_params(e, game_mouse(), carbon_modifiers([ev modifierFlags]), NSMakePoint([ev deltaX], [ev deltaY]), w);
         uint16_t axis = 1; /* kEventMouseWheelAxisY */
         int32_t delta = (int32_t)lround([ev scrollingDeltaY] * ([ev hasPreciseScrollingDeltas] ? 0.1 : 1.0));
         if (delta) {
@@ -213,6 +331,13 @@ static void translate(NSEvent *ev) {
 
 void plat_pump(double timeout) {
     ensure_app();
+    static int script_init;
+    if (!script_init) {
+        script_init = 1;
+        script_load();
+    }
+    script_run();
+    if ((g_script_pos < g_script_n || g_script_up) && timeout > 0.05) timeout = 0.05;
     @autoreleasepool {
         NSDate *until = timeout > 0 ? [NSDate dateWithTimeIntervalSinceNow:timeout] : [NSDate distantPast];
         for (;;) {
@@ -239,9 +364,9 @@ void plat_window_content_size(HWindow *w, int *width, int *height) {
     *height = (int)b.size.height;
 }
 void plat_mouse_global(int16_t *v, int16_t *h) {
-    NSPoint p = [NSEvent mouseLocation];
-    *h = (int16_t)p.x;
-    *v = (int16_t)(main_screen_height() - p.y);
+    NSPoint p = game_mouse();
+    *h = (int16_t)lround(p.x);
+    *v = (int16_t)lround(p.y);
 }
 
 /* ---- window delegate: focus and close ---- */
@@ -495,6 +620,12 @@ SHIM(_SetWindowGroupLevel) { RET(noErr); }
 SHIM(_FindWindow) {
     /* (Point by value {v,h}, WindowRef *out) -> WindowPartCode; inContent = 3 */
     int16_t v = (int16_t)(ARG(0) & 0xffff), h = (int16_t)(ARG(0) >> 16);
+    HWindow *d = display_window();
+    if (d && d->visible) {
+        if (ARG(1)) W32_(g_mem, ARG(1), d->g);
+        RET(3);
+        return;
+    }
     NSPoint p = NSMakePoint(h, main_screen_height() - v);
     for (NSWindow *nw in [NSApp orderedWindows]) {
         HWindow *w = hwindow_for(nw);
@@ -521,7 +652,7 @@ SHIM(_GetMouse) {
     /* Local to the current port: approximate with the focused window's content. */
     int16_t v, h;
     plat_mouse_global(&v, &h);
-    if (g_focus) {
+    if (g_focus && !g_focus->mode_w) {
         NSWindow *nw = (__bridge NSWindow *)g_focus->ns;
         int16_t qd[4];
         cocoa_to_qd([nw contentRectForFrameRect:[nw frame]], qd);
@@ -536,12 +667,137 @@ SHIM(_ShowCursor) { [NSCursor unhide]; }
 SHIM(_ObscureCursor) { [NSCursor setHiddenUntilMouseMoves:YES]; }
 SHIM(_SetThemeCursor) { [[NSCursor arrowCursor] set]; RET(noErr); }
 SHIM(_CGCursorIsVisible) { RET(1); }
+/* Move the cursor to a point in game coordinates (scaled from the virtual display mode). */
+static void warp_game(double x, double y) {
+    if (g_scripted) {
+        g_script_mouse = NSMakePoint(x, y);
+        return;
+    }
+    HWindow *d = display_window();
+    if (d) {
+        NSRect sf = [[NSScreen screens][0] frame];
+        x = x * sf.size.width / d->mode_w;
+        y = y * sf.size.height / d->mode_h;
+    }
+    CGWarpMouseCursorPosition(CGPointMake(x, y));
+    CGAssociateMouseAndMouseCursorPosition(true);
+}
 SHIM(_CGWarpMouseCursorPosition) {
     /* CGPoint by value (two floats on i386) */
-    CGWarpMouseCursorPosition(CGPointMake(ARGF32(0), ARGF32(1)));
+    warp_game(ARGF32(0), ARGF32(1));
     RET(0);
 }
-SHIM(_CGDisplayMoveCursorToPoint) { CGWarpMouseCursorPosition(CGPointMake(ARGF32(1), ARGF32(2))); RET(0); }
+SHIM(_CGDisplayMoveCursorToPoint) { warp_game(ARGF32(1), ARGF32(2)); RET(0); }
+/* Synthesized mouse events: the game posts them to move the cursor. Keep them
+ * as real CGEvents (the guest CFReleases them), but only ever warp on post. */
+SHIM(_CGEventCreateMouseEvent) {
+    /* (source, CGEventType, CGPoint {float x, y}, CGMouseButton) */
+    CGEventRef e = CGEventCreateMouseEvent(NULL, (CGEventType)ARG(1), CGPointMake(ARGF32(2), ARGF32(3)),
+                                           (CGMouseButton)ARG(4));
+    RETCF_OWNED(e);
+}
+SHIM(_CGEventSetType) { CGEventSetType((CGEventRef)CFI(0), (CGEventType)ARG(1)); }
+SHIM(_CGEventPost) {
+    CGEventRef e = (CGEventRef)CFI(1);
+    if (!e) return;
+    CGEventType t = CGEventGetType(e);
+    if (t == kCGEventMouseMoved || t == kCGEventLeftMouseDragged || t == kCGEventRightMouseDragged) {
+        CGPoint p = CGEventGetLocation(e);
+        warp_game(p.x, p.y);
+    }
+}
+
+/* ---- named pixmap cursors (32-bit, byte-swapped to big-endian ARGB by the game) ---- */
+static NSMutableDictionary<NSString *, NSCursor *> *g_cursors;
+SHIM(_QDRegisterNamedPixMapCursor) {
+    /* (PixMapHandle crsr, PixMapHandle mask, Point hotSpot, const char *name) */
+    uint32_t pm = R32_(g_mem, ARG(0));
+    uint32_t base = R32_(g_mem, pm), rb = R16_(g_mem, pm + 4) & 0x3fff;
+    int16_t top = (int16_t)R16_(g_mem, pm + 6), left = (int16_t)R16_(g_mem, pm + 8);
+    int16_t bottom = (int16_t)R16_(g_mem, pm + 10), right = (int16_t)R16_(g_mem, pm + 12);
+    int w = right - left, h = bottom - top;
+    if (w <= 0 || h <= 0 || R16_(g_mem, pm + 32) != 32) { RET(-50); return; }
+    CFDataRef data = CFDataCreate(NULL, PTR(base), (CFIndex)rb * h);
+    CGDataProviderRef dp = CGDataProviderCreateWithCFData(data);
+    static CGColorSpaceRef cs;
+    if (!cs) cs = CGColorSpaceCreateDeviceRGB();
+    CGImageRef img = CGImageCreate((size_t)w, (size_t)h, 8, 32, rb, cs,
+                                   kCGImageAlphaFirst | kCGBitmapByteOrder32Big, dp, NULL, false,
+                                   kCGRenderingIntentDefault);
+    NSImage *ni = [[NSImage alloc] initWithCGImage:img size:NSMakeSize(w, h)];
+    int16_t hv = (int16_t)(ARG(2) & 0xffff), hh = (int16_t)(ARG(2) >> 16);
+    NSCursor *c = [[NSCursor alloc] initWithImage:ni hotSpot:NSMakePoint(hh, hv)];
+    CGImageRelease(img);
+    CGDataProviderRelease(dp);
+    CFRelease(data);
+    if (!g_cursors) g_cursors = [NSMutableDictionary new];
+    g_cursors[[NSString stringWithUTF8String:CPTR(ARG(3))]] = c;
+    RET(noErr);
+}
+SHIM(_QDIsNamedPixMapCursorRegistered) { RET(g_cursors[[NSString stringWithUTF8String:CPTR(ARG(0))]] != nil); }
+SHIM(_QDSetNamedPixMapCursor) {
+    NSCursor *c = g_cursors[[NSString stringWithUTF8String:CPTR(ARG(0))]];
+    if (!c) { RET(-50); return; }
+    [c set];
+    RET(noErr);
+}
+SHIM(_QDUnregisterNamedPixMapCursur) {
+    [g_cursors removeObjectForKey:[NSString stringWithUTF8String:CPTR(ARG(0))]];
+    RET(noErr);
+}
+
+/* ---- port <-> global coordinates ---- */
+uint32_t qd_current_port(void);
+static void port_origin(int16_t *top, int16_t *left) {
+    *top = *left = 0;
+    HWindow *w = gh_get(qd_current_port(), TAG_PORT);
+    if (!w || w->mode_w) return;
+    NSWindow *nw = (__bridge NSWindow *)w->ns;
+    int16_t qd[4];
+    cocoa_to_qd([nw contentRectForFrameRect:[nw frame]], qd);
+    *top = qd[0];
+    *left = qd[1];
+}
+SHIM(_GlobalToLocal) {
+    int16_t t, l;
+    port_origin(&t, &l);
+    W16_(g_mem, ARG(0), (uint16_t)((int16_t)R16_(g_mem, ARG(0)) - t));
+    W16_(g_mem, ARG(0) + 2, (uint16_t)((int16_t)R16_(g_mem, ARG(0) + 2) - l));
+}
+SHIM(_LocalToGlobal) {
+    int16_t t, l;
+    port_origin(&t, &l);
+    W16_(g_mem, ARG(0), (uint16_t)((int16_t)R16_(g_mem, ARG(0)) + t));
+    W16_(g_mem, ARG(0) + 2, (uint16_t)((int16_t)R16_(g_mem, ARG(0) + 2) + l));
+}
+
+/* ---- KeyTranslate: (transData, UInt16 keycode | modifiers << 8, UInt32 *state) -> char code (US layout) ---- */
+SHIM(_KeyTranslate) {
+    static const char lower[] = "asdfhgzxcv\0bqweryt123465=97-80]ou[ip\rlj'k;\\,/nm.\t `\b";
+    static const char upper[] = "ASDFHGZXCV\0BQWERYT!@#$^%+(&_*)}OU{IP\rLJ\"K:|<?NM>\t ~\b";
+    uint32_t code = ARG(1) & 0x7f, mods = (ARG(1) >> 8) & 0xff;
+    int shift = (mods & (shiftKey >> 8)) != 0, caps = (mods & (alphaLock >> 8)) != 0;
+    uint32_t ch = 0;
+    if (code < sizeof lower - 1) {
+        ch = (uint8_t)(shift ? upper[code] : lower[code]);
+        if (caps && ch >= 'a' && ch <= 'z') ch -= 32;
+    } else if (code == 53) {
+        ch = 27; /* escape */
+    } else if (code == 76) {
+        ch = 3; /* keypad enter */
+    } else if (code == 117) {
+        ch = 127; /* forward delete */
+    } else if (code >= 123 && code <= 126) {
+        static const uint8_t arrows[4] = {28, 29, 31, 30}; /* left right down up */
+        ch = arrows[code - 123];
+    }
+    if (ARG(2)) W32_(g_mem, ARG(2), 0);
+    RET(ch);
+}
+
+SHIM(_YieldToAnyThread) { RET(noErr); }
+SHIM(_DisableMenuCommand) {}
+SHIM(_EnableMenuCommand) {}
 SHIM(_CGAssociateMouseAndMouseCursorPosition) { RET(CGAssociateMouseAndMouseCursorPosition((boolean_t)ARG(0))); }
 SHIM(_CGSetLocalEventsSuppressionInterval) { RET(0); }
 
@@ -567,6 +823,11 @@ const ShimDef shims_platform[] = {
     SHIM_ENTRY(_ObscureCursor), SHIM_ENTRY(_SetThemeCursor), SHIM_ENTRY(_CGCursorIsVisible),
     SHIM_ENTRY(_CGWarpMouseCursorPosition), SHIM_ENTRY(_CGDisplayMoveCursorToPoint),
     SHIM_ENTRY(_CGAssociateMouseAndMouseCursorPosition), SHIM_ENTRY(_CGSetLocalEventsSuppressionInterval),
+    SHIM_ENTRY(_CGEventCreateMouseEvent), SHIM_ENTRY(_CGEventSetType), SHIM_ENTRY(_CGEventPost),
+    SHIM_ENTRY(_QDRegisterNamedPixMapCursor), SHIM_ENTRY(_QDIsNamedPixMapCursorRegistered),
+    SHIM_ENTRY(_QDSetNamedPixMapCursor), SHIM_ENTRY(_QDUnregisterNamedPixMapCursur), SHIM_ENTRY(_GlobalToLocal),
+    SHIM_ENTRY(_LocalToGlobal), SHIM_ENTRY(_KeyTranslate), SHIM_ENTRY(_YieldToAnyThread),
+    SHIM_ENTRY(_DisableMenuCommand), SHIM_ENTRY(_EnableMenuCommand),
     SHIM_ENTRY(_HideMenuBar), SHIM_ENTRY(_ShowMenuBar), SHIM_ENTRY(_IsMenuBarVisible), SHIM_ENTRY(_GetMBarHeight),
     {0, 0},
 };

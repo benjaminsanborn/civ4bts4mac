@@ -42,6 +42,7 @@ static PortState *state_of(uint32_t port) {
     return w ? &w->st : &g_window_state;
 }
 static PortState *cur(void) { return state_of(g_port); }
+uint32_t qd_current_port(void) { return g_port; }
 
 /* ---- fonts: family IDs <-> names ---- */
 #define MAX_FONTS 128

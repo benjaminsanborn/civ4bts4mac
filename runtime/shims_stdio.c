@@ -287,7 +287,11 @@ static size_t gformat(WOut *o, uint32_t fmt, int wide, uint32_t va) {
             va += 4;
             break;
         default:
-            rt_fatal("printf: unsupported conversion '%lc'", (wint_t)conv);
+            /* Malformed spec (the game has "options=%6 ..."): print it literally, like libc. */
+            wputs_n(o, spec, sn);
+            if (conv) wput(o, conv);
+            else i--;
+            break;
         }
     }
 #undef FCH

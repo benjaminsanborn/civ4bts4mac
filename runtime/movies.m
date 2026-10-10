@@ -33,7 +33,18 @@ typedef struct {
     float rate;       /* preferred rate */
     int16_t volume;   /* 8.8 fixed */
     int playing;
+    int ended; /* end-of-movie callbacks have fired for this play-through */
 } HMovie;
+
+/* QuickTime callbacks (NewCallBack/CallMeWhen): only callBackAtExtremes is
+ * used, to learn when music finishes. */
+#define TAG_CALLBACK 0x51544342u /* 'QTCB' */
+typedef struct {
+    uint32_t g, movie; /* the movie doubles as its TimeBase */
+    uint32_t type, proc, refcon, flags;
+    int armed;
+} HCallBack;
+static NSMutableArray *g_callbacks; /* NSValue(HCallBack*) */
 
 static NSMutableArray *g_movies; /* NSValue(HMovie*) of live movies, for MoviesTask(NULL) */
 
@@ -63,8 +74,12 @@ SHIM(_QTNewDataReferenceFromFullPathCFString) {
     RET(noErr);
 }
 
-/* Map a movie inside the game folder to its transcoded MP4. */
+/* Map a movie inside the game folder to its transcoded MP4. Other media
+ * (the MP3 soundtrack) plays from the original file. */
 static NSURL *transcoded_url(const char *path) {
+    const char *ext = strrchr(path, '.');
+    if (!ext || strcasecmp(ext, ".mov"))
+        return access(path, R_OK) ? nil : [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
     char link[PATH_MAX], game[PATH_MAX], real[PATH_MAX], out[PATH_MAX];
     if (!realpath(rt_build_path("game", link, sizeof link), game)) return nil;
     const char *p = realpath(path, real) ? real : path;
@@ -106,6 +121,7 @@ SHIM(_NewMovieFromDataRef) {
     m->output = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:attrs];
     [m->item addOutput:m->output];
     m->player = [AVPlayer playerWithPlayerItem:m->item];
+    if (getenv("CIV4_MUTE")) m->player.muted = YES;
     m->player.actionAtItemEnd = AVPlayerActionAtItemEndPause;
     m->g = gh_new(TAG_MOVIE, m);
     if (!g_movies) g_movies = [NSMutableArray new];
@@ -118,6 +134,10 @@ SHIM(_NewMovieFromDataRef) {
 SHIM(_DisposeMovie) {
     HMovie *m = movie_of(ARG(0));
     if (!m) return;
+    for (NSValue *v in g_callbacks) {
+        HCallBack *cb = [v pointerValue];
+        if (cb->movie == m->g) cb->armed = 0, cb->movie = 0;
+    }
     [m->player pause];
     for (NSUInteger i = 0; i < [g_movies count]; i++)
         if ([g_movies[i] pointerValue] == m) { [g_movies removeObjectAtIndex:i]; break; }
@@ -146,12 +166,14 @@ SHIM(_SetMovieDrawingCompleteProc) {
 /* ---- playback ---- */
 static double movie_seconds(HMovie *m) { return CMTimeGetSeconds([m->player currentTime]); }
 static void seek(HMovie *m, double t) {
+    m->ended = 0;
     [m->player seekToTime:CMTimeMakeWithSeconds(t, TIMESCALE) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
 }
 SHIM(_StartMovie) {
     HMovie *m = movie_of(ARG(0));
     if (!m) return;
     m->playing = 1;
+    m->ended = 0;
     m->player.rate = m->rate;
 }
 SHIM(_StopMovie) {
@@ -223,14 +245,62 @@ static void draw_frame(CPU *cpu, HMovie *m) {
     if (m->done_proc) rt_call(cpu, m->done_proc, 2, m->g, m->done_refcon);
 }
 
+SHIM(_NewCallBack) {
+    /* (TimeBase, short callBackType) */
+    HCallBack *cb = calloc(1, sizeof *cb);
+    cb->movie = ARG(0);
+    cb->type = (uint16_t)ARG(1);
+    cb->g = gh_new(TAG_CALLBACK, cb);
+    if (!g_callbacks) g_callbacks = [NSMutableArray new];
+    [g_callbacks addObject:[NSValue valueWithPointer:cb]];
+    RET(cb->g);
+}
+SHIM(_CallMeWhen) {
+    /* (QTCallBack, QTCallBackUPP proc, long refCon, long param1, long param2, long param3) */
+    HCallBack *cb = gh_get(ARG(0), TAG_CALLBACK);
+    if (!cb) { RET(-50); return; }
+    cb->proc = ARG(1);
+    cb->refcon = ARG(2);
+    cb->flags = ARG(3);
+    cb->armed = 1;
+    RET(noErr);
+}
+SHIM(_CancelCallBack) {
+    HCallBack *cb = gh_get(ARG(0), TAG_CALLBACK);
+    if (cb) cb->armed = 0;
+}
+SHIM(_DisposeCallBack) {
+    HCallBack *cb = gh_get(ARG(0), TAG_CALLBACK);
+    if (!cb) return;
+    [g_callbacks removeObject:[NSValue valueWithPointer:cb]];
+    gh_free(cb->g);
+    free(cb);
+}
+
+/* Fire one-shot end-of-movie callbacks (callBackAtExtremes, triggerAtStop). */
+static void check_end(CPU *cpu, HMovie *m) {
+    if (!m->playing || m->ended || movie_seconds(m) < m->duration - 0.05) return;
+    m->ended = 1;
+    for (NSValue *v in [g_callbacks copy]) {
+        HCallBack *cb = [v pointerValue];
+        if (cb->movie != m->g || !cb->armed || cb->type != 4 /* callBackAtExtremes */) continue;
+        cb->armed = 0;
+        rt_call(cpu, cb->proc, 2, cb->g, cb->refcon);
+    }
+}
+
 SHIM(_MoviesTask) {
     /* (movie or NULL for all, long maxMilliSecToUse) */
     if (ARG(0)) {
         HMovie *m = movie_of(ARG(0));
-        if (m) draw_frame(cpu, m);
+        if (m) draw_frame(cpu, m), check_end(cpu, m);
         return;
     }
-    for (NSValue *v in [g_movies copy]) draw_frame(cpu, [v pointerValue]);
+    for (NSValue *v in [g_movies copy]) {
+        HMovie *m = [v pointerValue];
+        draw_frame(cpu, m);
+        if ([g_movies containsObject:v]) check_end(cpu, m);
+    }
 }
 
 const ShimDef shims_movies[] = {
@@ -244,6 +314,7 @@ const ShimDef shims_movies[] = {
     SHIM_ENTRY(_SetMoviePreferredRate), SHIM_ENTRY(_GetMovieVolume), SHIM_ENTRY(_SetMovieVolume),
     SHIM_ENTRY(_GetMovieAudioBalance), SHIM_ENTRY(_SetMovieAudioBalance), SHIM_ENTRY(_SetMovieActive),
     SHIM_ENTRY(_SetMovieActiveSegment), SHIM_ENTRY(_PrerollMovie), SHIM_ENTRY(_LoadMovieIntoRam),
-    SHIM_ENTRY(_MoviesTask),
+    SHIM_ENTRY(_MoviesTask), SHIM_ENTRY(_NewCallBack), SHIM_ENTRY(_CallMeWhen), SHIM_ENTRY(_CancelCallBack),
+    SHIM_ENTRY(_DisposeCallBack),
     {0, 0},
 };

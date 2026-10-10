@@ -4,6 +4,7 @@
  * A guest FSRef (80 opaque bytes) holds {FSREF_TAG, index}; the index selects
  * an absolute host path. */
 #include "cf.h"
+#include <CoreText/CoreText.h>
 #include "handles.h"
 
 #include <dirent.h>
@@ -554,7 +555,21 @@ SHIM(_FSpGetFInfo) { memset(PTR(ARG(1)), 0, 16); RET(noErr); }
 SHIM(_FSpSetFLock) { RET(noErr); }
 SHIM(_FSpRstFLock) { RET(noErr); }
 
+/* FMActivateFonts(const FSSpec *, FMFilter *, void *refCon, OptionBits): make the
+ * game's bundled fonts (Sylfaen) available to CoreText for this process. */
+SHIM(_FMActivateFonts) {
+    char path[PATH_MAX];
+    if (!ARG(0) || fsspec_path(ARG(0), path, sizeof path)) { RET(fnfErr); return; }
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+    CFErrorRef err = NULL;
+    if (!CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &err) && err) CFRelease(err);
+    CFRelease(url);
+    RET(noErr);
+}
+SHIM(_GetScriptManagerVariable) { RET(0); } /* smRoman / US for every selector */
+
 const ShimDef shims_files[] = {
+    SHIM_ENTRY(_FMActivateFonts), SHIM_ENTRY(_GetScriptManagerVariable),
     SHIM_ENTRY(_FSOpenFork), SHIM_ENTRY(_FSReadFork), SHIM_ENTRY(_FSWriteFork), SHIM_ENTRY(_FSGetForkPosition),
     SHIM_ENTRY(_FSSetForkPosition), SHIM_ENTRY(_FSGetForkSize), SHIM_ENTRY(_FSSetForkSize), SHIM_ENTRY(_FSCloseFork),
     SHIM_ENTRY(_FSClose), SHIM_ENTRY(_FSFlushFork), SHIM_ENTRY(_FSGetDataForkName), SHIM_ENTRY(_FSMakeFSRefUnicode),
