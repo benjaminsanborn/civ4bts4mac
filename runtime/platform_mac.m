@@ -1000,7 +1000,9 @@ SHIM(_KeyTranslate) {
     RET(ch);
 }
 
-SHIM(_YieldToAnyThread) { RET(noErr); }
+/* The game's Sleep() spins on YieldToAnyThread until its deadline (Carbon
+ * cooperative threads); give the time back instead of burning a core. */
+SHIM(_YieldToAnyThread) { usleep(250); RET(noErr); }
 SHIM(_DisableMenuCommand) {}
 SHIM(_EnableMenuCommand) {}
 SHIM(_CGAssociateMouseAndMouseCursorPosition) { RET(CGAssociateMouseAndMouseCursorPosition((boolean_t)ARG(0))); }
