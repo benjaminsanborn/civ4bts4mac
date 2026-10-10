@@ -132,9 +132,6 @@ SHIM(_CSCopyUserName) {
 }
 
 /* ---- Thread Manager / toolbox init ---- */
-SHIM(_GetCurrentThread) { W32_(g_mem, ARG(0), 1); RET(noErr); }
-SHIM(_SetThreadTerminator) { RET(noErr); }
-SHIM(_GetThreadState) { if (ARG(1)) W16_(g_mem, ARG(1), 0 /* kRunningThreadState */); RET(noErr); }
 SHIM(_FlushEvents) {}
 SHIM(_InitCursor) {}
 SHIM(_SetQDGlobalsRandomSeed) {}
@@ -189,10 +186,16 @@ SHIM(_SectRect) {
     RET(ok);
 }
 
+/* Process enumeration (CvApp::isProcessAlreadyRunning, after a relaunch): no
+ * other game processes. procNotFound ends the walk. */
+SHIM(_GetNextProcess) { RET(-600); }
+SHIM(_CopyProcessName) { if (ARG(1)) W32_(g_mem, ARG(1), 0); RET(-600); }
+
 /* ---- Debugger: log instead of trapping ---- */
 SHIM(_Debugger) { rt_log("guest called Debugger()"); }
 
 const ShimDef shims_carbon[] = {
+    SHIM_ENTRY(_GetNextProcess), SHIM_ENTRY(_CopyProcessName),
     SHIM_ENTRY(_HLock), SHIM_ENTRY(_HUnlock), SHIM_ENTRY(_PtrToHand), SHIM_ENTRY(_ReleaseResource),
     SHIM_ENTRY(_SysBeep), SHIM_ENTRY(_SetFrontProcess), SHIM_ENTRY(_FMDeactivateFonts),
     SHIM_ENTRY(_GetScriptVariable), SHIM_ENTRY(_SectRect),
@@ -201,8 +204,7 @@ const ShimDef shims_carbon[] = {
     SHIM_ENTRY(_MPAllocateAligned), SHIM_ENTRY(_MPFree), SHIM_ENTRY(_NewPtrClear), SHIM_ENTRY(_DisposePtr),
     SHIM_ENTRY(_Gestalt), SHIM_ENTRY(_Microseconds), SHIM_ENTRY(_TickCount), SHIM_ENTRY(_GetDblTime),
     SHIM_ENTRY(_GetDateTime), SHIM_ENTRY(_GetCurrentProcess), SHIM_ENTRY(_GetProcessPID), SHIM_ENTRY(_GetProcessInformation), SHIM_ENTRY(_PBHGetVInfoSync),
-    SHIM_ENTRY(_CSCopyUserName), SHIM_ENTRY(_Debugger), SHIM_ENTRY(_GetCurrentThread), SHIM_ENTRY(_FlushEvents),
-    SHIM_ENTRY(_SetThreadTerminator), SHIM_ENTRY(_GetThreadState),
+    SHIM_ENTRY(_CSCopyUserName), SHIM_ENTRY(_Debugger), SHIM_ENTRY(_FlushEvents),
     SHIM_ENTRY(_InitCursor), SHIM_ENTRY(_SetQDGlobalsRandomSeed), SHIM_ENTRY(_EnterMovies),
     SHIM_ENTRY(_FindNextComponent), SHIM_ENTRY(_DisposeHandle), SHIM_ENTRY(_CreateNibReferenceWithCFBundle), SHIM_ENTRY(_CreateNibReference), SHIM_ENTRY(_GetKeys),
     SHIM_ENTRY(_AEInstallEventHandler),

@@ -228,6 +228,7 @@ __attribute__((weak)) void plat_pump(double timeout) {
 /* Wait for a queued event matching the list. Returns it (still queued unless pulled). */
 /* Input scripts can run Python in the game ("py CODE"; platform_mac.m). */
 int plat_take_python(char *out, size_t n);
+void cthread_event_yield(void);
 static void run_script_python(CPU *cpu) {
     char code[256];
     if (!plat_take_python(code, sizeof code)) return;
@@ -249,6 +250,7 @@ static HEvent *receive(CPU *cpu, uint32_t n, uint32_t list, double timeout, int 
         double next_timer = fire_timers(cpu);
         plat_pump(0);
         run_script_python(cpu);
+        cthread_event_yield(); /* cooperative Carbon threads run while the main thread pumps events */
         for (int i = 0; i < g_nq; i++) {
             HEvent *e = g_queue[i];
             if (!matches_list(e, n, list)) continue;

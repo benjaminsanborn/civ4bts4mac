@@ -5,7 +5,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 tools/link_civ4.sh > build/link.log 2>&1 || { grep -A3 error build/link.log | head -30; exit 1; }
 # Test runs use a sandboxed profile (build/home: intro off, logging on), not ~/Documents.
-CIV4_PREFS_DOMAIN=${CIV4_PREFS_DOMAIN-civ4.test} CIV4_MUTE=${CIV4_MUTE-1} HOME="${CIV4_HOME:-$ROOT/build/home}" ./build/civ4 "$@" > build/run.log 2>&1 &
+CIV4_PIDFILE="$ROOT/build/relaunch.pid" CIV4_PREFS_DOMAIN=${CIV4_PREFS_DOMAIN-civ4.test} CIV4_MUTE=${CIV4_MUTE-1} HOME="${CIV4_HOME:-$ROOT/build/home}" ./build/civ4 "$@" > build/run.log 2>&1 &
 PID=$!
 for i in $(seq 1 ${SECS:-60}); do
     kill -0 $PID 2>/dev/null || break
@@ -14,4 +14,6 @@ for i in $(seq 1 ${SECS:-60}); do
 done
 kill $PID 2>/dev/null && echo "[try] killed after ${SECS:-60}s" >> build/run.log
 wait $PID 2>/dev/null
+# A mod/scenario relaunch replaces the process; stop the new instance too.
+[ -f build/relaunch.pid ] && kill "$(cat build/relaunch.pid)" 2>/dev/null; rm -f build/relaunch.pid
 grep -vE "CFBundleGetFunctionPointer|NSIsSymbolNameDefined|^    (rt_call|main|start|backtrace_host|on_trap|on_crash|rt_unimpl|rt_import|_sigtramp|rt_fatal|dispatch_from|sh_RunApplicationEventLoop)\+" build/run.log | tail -${TAIL:-30}

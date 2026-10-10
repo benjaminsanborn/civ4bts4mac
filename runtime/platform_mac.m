@@ -1000,9 +1000,6 @@ SHIM(_KeyTranslate) {
     RET(ch);
 }
 
-/* The game's Sleep() spins on YieldToAnyThread until its deadline (Carbon
- * cooperative threads); give the time back instead of burning a core. */
-SHIM(_YieldToAnyThread) { usleep(250); RET(noErr); }
 SHIM(_DisableMenuCommand) {}
 SHIM(_EnableMenuCommand) {}
 SHIM(_CGAssociateMouseAndMouseCursorPosition) { RET(CGAssociateMouseAndMouseCursorPosition((boolean_t)ARG(0))); }
@@ -1043,8 +1040,7 @@ const ShimDef shims_platform[] = {
     SHIM_ENTRY(_CGEventCreateMouseEvent), SHIM_ENTRY(_CGEventSetType), SHIM_ENTRY(_CGEventPost),
     SHIM_ENTRY(_QDRegisterNamedPixMapCursor), SHIM_ENTRY(_QDIsNamedPixMapCursorRegistered),
     SHIM_ENTRY(_QDSetNamedPixMapCursor), SHIM_ENTRY(_QDUnregisterNamedPixMapCursur), SHIM_ENTRY(_GlobalToLocal),
-    SHIM_ENTRY(_LocalToGlobal), SHIM_ENTRY(_KeyTranslate), SHIM_ENTRY(_YieldToAnyThread),
-    SHIM_ENTRY(_DisableMenuCommand), SHIM_ENTRY(_EnableMenuCommand),
+    SHIM_ENTRY(_LocalToGlobal), SHIM_ENTRY(_KeyTranslate), SHIM_ENTRY(_DisableMenuCommand), SHIM_ENTRY(_EnableMenuCommand),
     SHIM_ENTRY(_LSOpenCFURLRef), SHIM_ENTRY(_HideMenuBar), SHIM_ENTRY(_ShowMenuBar), SHIM_ENTRY(_IsMenuBarVisible), SHIM_ENTRY(_GetMBarHeight),
     {0, 0},
 };

@@ -3,6 +3,7 @@
  * and modal error alerts (logged instead). */
 #include "cf.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
 static void log_cfstring(const char *what, uint32_t g) {
@@ -35,3 +36,41 @@ OVERRIDE(__ZN3ASL8ErrorDieEPK10__CFStringz) {
     rt_fatal("game called ASL::ErrorDie");
 }
 
+
+/* ---- relaunching (loading a mod or BTS scenario restarts the game) ----
+ * RelaunchSelf(cmdline) normally starts a new instance through Launch
+ * Services and an Apple Event carrying the command line, then exits; the new
+ * instance waits for that event in ASL::WaitForCommandLine. Start a new
+ * harness process instead, passing the command line in the environment. */
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <spawn.h>
+#include <unistd.h>
+extern char **environ;
+OVERRIDE(_RelaunchSelf) {
+    const char *cmd = ARG(0) ? CPTR(ARG(0)) : "";
+    rt_log("RelaunchSelf: restarting with command line \"%s\"", cmd);
+    char exe[PATH_MAX];
+    uint32_t n = sizeof exe;
+    if (_NSGetExecutablePath(exe, &n) != 0) rt_fatal("RelaunchSelf: no executable path");
+    setenv("CIV4_COMMAND_LINE", cmd, 1);
+    unsetenv("CIV4_INPUT"); /* a test script belongs to the first instance */
+    char *argv[] = {exe, NULL};
+    pid_t pid;
+    if (posix_spawn(&pid, exe, NULL, NULL, argv, environ) != 0) {
+        rt_log("RelaunchSelf: could not start %s", exe);
+    } else if (getenv("CIV4_PIDFILE")) { /* test runs track the new instance */
+        FILE *f = fopen(getenv("CIV4_PIDFILE"), "w");
+        if (f) { fprintf(f, "%d\n", pid); fclose(f); }
+    }
+    exit(0);
+}
+/* ASL::WaitForCommandLine(ticks, char *buf, size): the relaunch command line, if any. */
+OVERRIDE(__ZN3ASL18WaitForCommandLineEmPcm) {
+    const char *cmd = getenv("CIV4_COMMAND_LINE");
+    uint32_t buf = ARG(1), size = ARG(2);
+    if (!size) { RET(0); return; }
+    snprintf(PTR(buf), size, "%s%s", cmd && *cmd ? " " : "", cmd ? cmd : "");
+    unsetenv("CIV4_COMMAND_LINE");
+    RET(0);
+}
