@@ -43,6 +43,7 @@ extern uint8_t *g_mem;
 void rt_dispatch(CPU *cpu, uint32_t target);
 GuestFn rt_lookup(uint32_t target);
 void rt_import(CPU *cpu, uint32_t id);
+void rt_start_pump_ticker(void); /* see plat_pump_busy */
 _Noreturn void rt_unimpl(CPU *cpu, uint32_t addr, const char *what);
 
 /* ---- memory ---- */

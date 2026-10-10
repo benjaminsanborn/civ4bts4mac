@@ -4,6 +4,7 @@
 #include "functab.h"
 
 #include <pthread.h>
+#include <unistd.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -241,6 +242,29 @@ static int import_debug_enabled(void) {
     return 0;
 }
 
+/* A ticker thread sets g_pump_due every 50 ms; the main thread then reads the
+ * window queue at its next import or indirect call (plat_pump_busy), so long
+ * game frames don't leave the app unresponsive to the window server. */
+static volatile int g_pump_due;
+static void *pump_ticker(void *unused) {
+    (void)unused;
+    for (;;) {
+        usleep(50000);
+        g_pump_due = 1;
+    }
+    return NULL;
+}
+static void pump_if_main(void) {
+    if (!pthread_main_np()) return;
+    g_pump_due = 0;
+    plat_pump_busy();
+}
+void rt_start_pump_ticker(void) {
+    pthread_t t;
+    pthread_create(&t, NULL, pump_ticker, NULL);
+    pthread_detach(t);
+}
+
 void rt_import(CPU *cpu, uint32_t id) {
     if (__builtin_expect(g_import_debug != 0, 0)) {
         if (g_import_debug < 0) g_import_debug = import_debug_enabled();
@@ -250,7 +274,7 @@ void rt_import(CPU *cpu, uint32_t id) {
         }
     }
     g_import_calls++;
-    if (__builtin_expect(!(g_import_calls & 0xfff), 0) && pthread_main_np()) plat_pump_busy();
+    if (__builtin_expect(g_pump_due, 0)) pump_if_main();
     typeof(g_fr[0]) *e = &g_fr[g_import_calls % FR_N];
     uint32_t sp = cpu->r[4];
     e->n = g_import_calls;
@@ -339,6 +363,7 @@ static int resolve(uint32_t target, uint32_t *out) {
 }
 
 void rt_dispatch(CPU *cpu, uint32_t target) {
+    if (__builtin_expect(g_pump_due, 0)) pump_if_main();
     _Atomic uint64_t *slot = &g_dispatch_cache[(target * 2654435761u) >> 16];
     uint64_t v = atomic_load_explicit(slot, memory_order_relaxed);
     uint32_t r;

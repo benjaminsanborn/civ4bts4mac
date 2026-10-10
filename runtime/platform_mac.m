@@ -500,6 +500,7 @@ void plat_pump(double timeout) {
         pthread_t t;
         pthread_create(&t, NULL, watchdog, NULL);
         pthread_detach(t);
+        rt_start_pump_ticker();
     }
     static int stalled = -1;
     if (stalled < 0) stalled = !getenv("CIV4_TEST_STALL");
@@ -581,7 +582,7 @@ static void note_read(void) {
 void plat_pump_busy(void) {
     static int busy, off = -1; /* CIV4_NO_BUSY_PUMP=1 turns this off, for A/B tests */
     if (off < 0) off = getenv("CIV4_NO_BUSY_PUMP") != NULL;
-    if (off || busy || !g_last_read || CACurrentMediaTime() - g_last_read < 0.1) return;
+    if (off || busy || !g_last_read || CACurrentMediaTime() - g_last_read < 0.05) return;
     busy = 1;
     note_read();
     @autoreleasepool {
