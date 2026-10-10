@@ -6,6 +6,7 @@
 #import <Cocoa/Cocoa.h>
 
 #include "cf.h"
+#include <math.h>
 #include "events.h"
 #include "handles.h"
 #include "platform.h"
@@ -110,6 +111,23 @@ static HWindow *display_window(void) {
     return NULL;
 }
 
+/* Where the display port's picture is on screen (Cocoa coordinates): the mode
+ * is scaled to fit the screen with its aspect ratio kept (letter/pillarboxed). */
+static NSRect display_rect(HWindow *d) {
+    NSWindow *nw = (__bridge NSWindow *)d->ns;
+    NSRect f = [(__bridge NSView *)d->view frame];
+    return NSOffsetRect(f, nw.frame.origin.x, nw.frame.origin.y);
+}
+static void layout_display(HWindow *d) {
+    NSView *content = [(__bridge NSWindow *)d->ns contentView];
+    NSRect b = [content bounds];
+    /* Keep the picture out from under the camera notch. */
+    if (@available(macOS 12.0, *)) b.size.height -= [[(__bridge NSWindow *)d->ns screen] safeAreaInsets].top;
+    double scale = fmin(b.size.width / d->mode_w, b.size.height / d->mode_h);
+    double w = round(d->mode_w * scale), h = round(d->mode_h * scale);
+    [(__bridge NSView *)d->view setFrame:NSMakeRect(round((b.size.width - w) / 2), round((b.size.height - h) / 2), w, h)];
+}
+
 /* Scripted input (CIV4_INPUT) replaces the real mouse and keyboard. */
 static int g_scripted;
 static NSPoint g_script_mouse;
@@ -120,9 +138,9 @@ static NSPoint game_mouse(void) {
     NSPoint p = [NSEvent mouseLocation];
     HWindow *d = display_window();
     if (d) {
-        NSRect sf = [[NSScreen screens][0] frame];
-        return NSMakePoint((p.x - sf.origin.x) * d->mode_w / sf.size.width,
-                           (NSMaxY(sf) - p.y) * d->mode_h / sf.size.height);
+        NSRect r = display_rect(d);
+        double x = (p.x - r.origin.x) * d->mode_w / r.size.width, y = (NSMaxY(r) - p.y) * d->mode_h / r.size.height;
+        return NSMakePoint(fmin(fmax(x, 0), d->mode_w - 1), fmin(fmax(y, 0), d->mode_h - 1));
     }
     return NSMakePoint(p.x, main_screen_height() - p.y);
 }
@@ -173,9 +191,22 @@ static void post_mouse(NSEvent *ev, uint32_t kind, uint16_t button) {
 
 static void post_key_raw(uint32_t kind, uint32_t code, uint32_t mods, NSString *chars, NSString *raw) {
     uint32_t kbd = 40;
+    int down = kind != kEventRawKeyUp;
+    if (kind == kEventRawKeyModifiersChanged) {
+        /* A modifier key is down while its flag is set. */
+        uint32_t flag = 0;
+        switch (code) {
+        case 56: case 60: flag = shiftKey; break;
+        case 59: case 62: flag = controlKey; break;
+        case 58: case 61: flag = optionKey; break;
+        case 55: case 54: flag = cmdKey; break;
+        case 57: flag = alphaLock; break;
+        }
+        down = (mods & flag) != 0;
+    }
     if (code < 128) {
-        if (kind == kEventRawKeyUp) g_keymap[code >> 3] &= ~(1u << (code & 7));
-        else g_keymap[code >> 3] |= 1u << (code & 7);
+        if (down) g_keymap[code >> 3] |= 1u << (code & 7);
+        else g_keymap[code >> 3] &= ~(1u << (code & 7));
     }
     if (kind == kEventRawKeyModifiersChanged) chars = @"";
     HEvent *e = ev_create(kEventClassKeyboard, kind);
@@ -192,7 +223,10 @@ static void post_key_raw(uint32_t kind, uint32_t code, uint32_t mods, NSString *
         [chars getCharacters:u range:NSMakeRange(0, n)];
         ev_set_param(e, kEventParamKeyUnicodes, typeUnicodeText, u, (uint32_t)(2 * n));
     }
-    if (g_focus) ev_set_param(e, kEventParamWindowRef, typeWindowRef, &g_focus->g, 4);
+    /* Like mouse events, always name a window: the game's handlers don't check. */
+    HWindow *w = g_focus ? g_focus : display_window();
+    if (!w && [g_windows count]) w = [g_windows[0] pointerValue];
+    if (w) ev_set_param(e, kEventParamWindowRef, typeWindowRef, &w->g, 4);
     ev_post(e);
     ev_release(e);
 }
@@ -238,6 +272,7 @@ static int keycode_for(unichar c) {
     if (c == '\r' || c == '\n') return 36;
     if (c == 27) return 53;
     if (c == '\t') return 48;
+    if (c == '`') return 50;
     for (int k = 0; k < (int)sizeof rows - 1; k++)
         if (rows[k] == c && c) return k;
     return 0;
@@ -267,12 +302,21 @@ static void script_step(ScriptStep *st) {
         g_script_up = b;
         g_script_up_t = ev_now() + 0.15;
     } else if (!strcmp(st->cmd, "key")) {
+        /* Shifted symbols type as shift + their unshifted key. */
+        static const char shifted[] = "!1@2#3$4%5^6&7*8(9)0_-+={[}]|\\:;\"'<,>.?/~`";
         for (const char *c = st->arg; *c; c++) {
+            char base = *c;
+            uint32_t mods = 0;
+            if (*c >= 'A' && *c <= 'Z') base = (char)(*c + 32), mods = shiftKey;
+            for (int k = 0; shifted[k]; k += 2)
+                if (shifted[k] == *c) base = shifted[k + 1], mods = shiftKey;
             NSString *ch = [NSString stringWithFormat:@"%c", *c];
-            int code = keycode_for((unichar)*c);
-            uint32_t mods = (*c >= 'A' && *c <= 'Z') ? shiftKey : 0;
-            post_key_raw(kEventRawKeyDown, (uint32_t)code, mods, ch, [ch lowercaseString]);
-            post_key_raw(kEventRawKeyUp, (uint32_t)code, mods, ch, [ch lowercaseString]);
+            NSString *raw = [NSString stringWithFormat:@"%c", base];
+            int code = keycode_for((unichar)base);
+            if (mods) post_key_raw(kEventRawKeyModifiersChanged, 56, mods, @"", @"");
+            post_key_raw(kEventRawKeyDown, (uint32_t)code, mods, ch, raw);
+            post_key_raw(kEventRawKeyUp, (uint32_t)code, mods, ch, raw);
+            if (mods) post_key_raw(kEventRawKeyModifiersChanged, 56, 0, @"", @"");
         }
     } else if (!strcmp(st->cmd, "keycode")) {
         int code = atoi(st->arg);
@@ -460,9 +504,11 @@ SHIM(_CreateNewPortForCGDisplayID) {
         [nw setReleasedWhenClosed:NO];
         [nw setAcceptsMouseMovedEvents:YES];
         [nw setBackgroundColor:[NSColor blackColor]];
-        GameView *view = [[GameView alloc] initWithFrame:[[nw contentView] bounds]];
-        [view setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        [nw setContentView:view];
+        /* Black backdrop; the GL view inside it is sized to the mode's aspect ratio. */
+        NSView *backdrop = [[NSView alloc] initWithFrame:[[nw contentView] bounds]];
+        GameView *view = [[GameView alloc] initWithFrame:[backdrop bounds]];
+        [backdrop addSubview:view];
+        [nw setContentView:backdrop];
         [nw makeFirstResponder:view];
         w->ns = (__bridge_retained void *)nw;
         w->view = (__bridge void *)view;
@@ -476,6 +522,7 @@ SHIM(_CreateNewPortForCGDisplayID) {
         [NSApp activateIgnoringOtherApps:YES];
     }
     plat_display_mode(&display_port->mode_w, &display_port->mode_h);
+    layout_display(display_port);
     rt_log("CreateNewPortForCGDisplayID: fullscreen %dx%d", display_port->mode_w, display_port->mode_h);
     RET(display_port->port);
 }
@@ -675,9 +722,9 @@ static void warp_game(double x, double y) {
     }
     HWindow *d = display_window();
     if (d) {
-        NSRect sf = [[NSScreen screens][0] frame];
-        x = x * sf.size.width / d->mode_w;
-        y = y * sf.size.height / d->mode_h;
+        NSRect r = display_rect(d);
+        x = r.origin.x + x * r.size.width / d->mode_w;
+        y = main_screen_height() - NSMaxY(r) + y * r.size.height / d->mode_h;
     }
     CGWarpMouseCursorPosition(CGPointMake(x, y));
     CGAssociateMouseAndMouseCursorPosition(true);

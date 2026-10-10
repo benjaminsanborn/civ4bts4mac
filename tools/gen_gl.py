@@ -17,6 +17,7 @@ SPECIAL = {
     "glBindBufferARB", "glMapBufferARB", "glUnmapBufferARB", "glFlushMappedBufferRangeAPPLE", "glGetString",
     "glShaderSourceARB", "glVertexPointer", "glNormalPointer", "glColorPointer", "glTexCoordPointer",
     "glSecondaryColorPointer", "glVertexAttribPointerARB", "glDrawRangeElements", "gluCheckExtension",
+    "glBindFramebufferEXT", "glDrawBuffer", "glReadBuffer",
 }
 
 INT_TYPES = {"GLenum", "GLboolean", "GLbitfield", "GLbyte", "GLshort", "GLint", "GLsizei", "GLubyte", "GLushort",

@@ -20,6 +20,25 @@ static const void *element_ptr(uint32_t a) {
 
 SHIM(_glBindBufferARB) { glBindBufferARB(ARG(0), ARG(1)); }
 
+/* ---- pbuffers are FBOs (agl.m): while one is the drawable, it stands in for
+ * the window-system framebuffer 0 and its GL_BACK/GL_FRONT buffers. ---- */
+GLuint agl_default_fbo(void);
+static GLenum window_buffer(GLenum b) {
+    GLuint fbo = agl_default_fbo();
+    if (!fbo) return b;
+    GLint cur = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &cur);
+    if ((GLuint)cur != fbo) return b;
+    switch (b) {
+    case GL_BACK: case GL_FRONT: case GL_BACK_LEFT: case GL_FRONT_LEFT: case GL_FRONT_AND_BACK: case GL_LEFT:
+        return GL_COLOR_ATTACHMENT0_EXT;
+    default: return b;
+    }
+}
+SHIM(_glBindFramebufferEXT) { glBindFramebufferEXT(ARG(0), ARG(1) ? ARG(1) : agl_default_fbo()); }
+SHIM(_glDrawBuffer) { glDrawBuffer(window_buffer(ARG(0))); }
+SHIM(_glReadBuffer) { glReadBuffer(window_buffer(ARG(0))); }
+
 SHIM(_glVertexPointer) { glVertexPointer((GLint)ARG(0), ARG(1), (GLsizei)ARG(2), array_ptr(ARG(3))); }
 SHIM(_glNormalPointer) { glNormalPointer(ARG(0), (GLsizei)ARG(1), array_ptr(ARG(2))); }
 SHIM(_glColorPointer) { glColorPointer((GLint)ARG(0), ARG(1), (GLsizei)ARG(2), array_ptr(ARG(3))); }
@@ -129,6 +148,7 @@ SHIM(_gluCheckExtension) {
 }
 
 const ShimDef shims_gl_special[] = {
+    SHIM_ENTRY(_glBindFramebufferEXT), SHIM_ENTRY(_glDrawBuffer), SHIM_ENTRY(_glReadBuffer),
     SHIM_ENTRY(_glBindBufferARB), SHIM_ENTRY(_glVertexPointer), SHIM_ENTRY(_glNormalPointer),
     SHIM_ENTRY(_glColorPointer), SHIM_ENTRY(_glTexCoordPointer), SHIM_ENTRY(_glSecondaryColorPointer),
     SHIM_ENTRY(_glVertexAttribPointerARB), SHIM_ENTRY(_glDrawRangeElements), SHIM_ENTRY(_glMapBufferARB),

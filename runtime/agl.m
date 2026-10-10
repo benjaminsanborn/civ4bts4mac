@@ -36,11 +36,25 @@ typedef struct {
     NSOpenGLPixelFormat *pf;
 } HPix;
 
+struct HPBuf;
 typedef struct {
     NSOpenGLContext *ctx;
     uint32_t port; /* drawable */
     uint32_t g;
+    struct HPBuf *pbuf; /* pbuffer drawable (aglSetPBuffer), or NULL */
 } HCtx;
+
+/* Pbuffers are FBOs. aglTexImagePBuffer makes the bound texture the FBO's color
+ * attachment, so rendering to the pbuffer updates that texture directly. */
+typedef struct HPBuf {
+    uint32_t g;
+    int w, h;
+    GLenum target, ifmt;
+    GLuint fbo, depth, tex;
+    int own_tex;
+} HPBuf;
+static GLuint g_default_fbo; /* the current context's pbuffer FBO, or 0 */
+GLuint agl_default_fbo(void) { return g_default_fbo; }
 
 static HCtx *g_ctxs[64];
 static int g_nctx;
@@ -143,6 +157,7 @@ SHIM(_aglSetCurrentContext) {
     HCtx *c = ctx_of(ARG(0));
     if (c) [c->ctx makeCurrentContext];
     else [NSOpenGLContext clearCurrentContext];
+    g_default_fbo = c && c->pbuf ? c->pbuf->fbo : 0;
     RET(1);
 }
 SHIM(_aglGetCurrentContext) {
@@ -152,6 +167,16 @@ SHIM(_aglGetCurrentContext) {
 SHIM(_aglSetDrawable) {
     HCtx *c = ctx_of(ARG(0));
     if (!c) { RET(0); return; }
+    if (c->pbuf) {
+        c->pbuf = NULL;
+        if ([NSOpenGLContext currentContext] == c->ctx) {
+            g_default_fbo = 0;
+            glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
+            glDrawBuffer(GL_BACK);
+            glReadBuffer(GL_BACK);
+        }
+        if (c->port == ARG(1) && ARG(1)) { RET(1); return; } /* same window: just leave the pbuffer */
+    }
     c->port = ARG(1);
     if (!ARG(1)) {
         [c->ctx clearDrawable];
@@ -231,6 +256,25 @@ SHIM(_aglSwapBuffers) {
     if (!c) return;
     maybe_capture_frame();
     [c->ctx flushBuffer];
+    /* CIV4_FPS: every 5 seconds, log the frame rate and the slow frames (hitches). */
+    static int fps = -1, frames, slow;
+    static double t0, last, worst;
+    if (fps < 0) fps = getenv("CIV4_FPS") != NULL;
+    if (fps) {
+        double now = CACurrentMediaTime();
+        if (!t0) t0 = last = now;
+        double dt = now - last;
+        last = now;
+        if (dt > worst) worst = dt;
+        if (dt > 0.05) slow++;
+        frames++;
+        if (now - t0 >= 5) {
+            rt_log("fps %.1f  worst frame %.0f ms  frames over 50 ms: %d", frames / (now - t0), worst * 1000, slow);
+            frames = slow = 0;
+            worst = 0;
+            t0 = now;
+        }
+    }
 }
 SHIM(_aglSetInteger) {
     /* AGL context parameter numbers match CGL's (swap interval 222, backing size 304, ...). */
@@ -274,7 +318,102 @@ SHIM(_aglSetFullScreen) {
     RET(1);
 }
 SHIM(_aglUseFont) { RET(0); }
-SHIM(_aglCreatePBuffer) { rt_log("aglCreatePBuffer: pbuffers not supported"); RET(0); }
+SHIM(_aglCreatePBuffer) {
+    /* (GLint width, GLint height, GLenum target, GLenum internalFormat, long max_level, AGLPbuffer *out) */
+    HPBuf *p = calloc(1, sizeof *p);
+    p->w = (int)ARG(0);
+    p->h = (int)ARG(1);
+    p->target = ARG(2);
+    p->ifmt = ARG(3);
+    p->g = gh_new(TAG_PBUFFER, p);
+    W32_(g_mem, ARG(5), p->g);
+    RET(1);
+}
+static void pbuf_attach(HPBuf *p) {
+    GLint prev = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &prev);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, p->fbo);
+    glFramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, p->target, p->tex, 0);
+    GLenum st = glCheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT);
+    if (st != GL_FRAMEBUFFER_COMPLETE_EXT)
+        rt_log("pbuffer %dx%d target %04x format %04x tex %u: FBO incomplete (%04x)", p->w, p->h, p->target, p->ifmt, p->tex, st);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, (GLuint)prev);
+}
+static void pbuf_alloc_tex(HPBuf *p, GLuint tex) {
+    GLint prev = 0;
+    glGetIntegerv(p->target == GL_TEXTURE_RECTANGLE_EXT ? GL_TEXTURE_BINDING_RECTANGLE_EXT : GL_TEXTURE_BINDING_2D, &prev);
+    glBindTexture(p->target, tex);
+    /* Metal-backed GL can't render to 3-channel textures: RGB pbuffers get RGBA storage. */
+    GLint ifmt = p->ifmt == GL_RGB || p->ifmt == GL_RGB8 || p->ifmt == 3 ? GL_RGBA8 : (GLint)p->ifmt;
+    glTexImage2D(p->target, 0, ifmt, p->w, p->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(p->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glBindTexture(p->target, (GLuint)prev);
+}
+static void pbuf_ensure_fbo(HPBuf *p) {
+    if (p->fbo) return;
+    if (!p->tex) {
+        glGenTextures(1, &p->tex);
+        p->own_tex = 1;
+        pbuf_alloc_tex(p, p->tex);
+    }
+    glGenFramebuffersEXT(1, &p->fbo);
+    glGenRenderbuffersEXT(1, &p->depth);
+    glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, p->depth);
+    glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8_EXT, p->w, p->h);
+    glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, 0);
+    GLint prev = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &prev);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, p->fbo);
+    glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, p->depth);
+    glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT, GL_RENDERBUFFER_EXT, p->depth);
+    glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, (GLuint)prev);
+    pbuf_attach(p);
+}
+SHIM(_aglTexImagePBuffer) {
+    /* (AGLContext, AGLPbuffer, GLint source): the texture bound to the pbuffer's target becomes its color buffer. */
+    HPBuf *p = gh_get(ARG(1), TAG_PBUFFER);
+    if (!p) { RET(0); return; }
+    GLint tex = 0;
+    glGetIntegerv(p->target == GL_TEXTURE_RECTANGLE_EXT ? GL_TEXTURE_BINDING_RECTANGLE_EXT : GL_TEXTURE_BINDING_2D, &tex);
+    if (!tex || (GLuint)tex == p->tex) { RET(1); return; }
+    if (p->own_tex) glDeleteTextures(1, &p->tex);
+    p->tex = (GLuint)tex;
+    p->own_tex = 0;
+    pbuf_alloc_tex(p, p->tex);
+    if (p->fbo) pbuf_attach(p);
+    RET(1);
+}
+SHIM(_aglSetPBuffer) {
+    /* (AGLContext, AGLPbuffer, GLint face, GLint level, GLint virtualScreen) */
+    HCtx *c = ctx_of(ARG(0));
+    HPBuf *p = gh_get(ARG(1), TAG_PBUFFER);
+    if (!c || !p) { RET(0); return; }
+    pbuf_ensure_fbo(p);
+    c->pbuf = p;
+    if ([NSOpenGLContext currentContext] == c->ctx) {
+        g_default_fbo = p->fbo;
+        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, p->fbo);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
+        glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
+    }
+    RET(1);
+}
+SHIM(_aglDestroyPBuffer) {
+    HPBuf *p = gh_get(ARG(0), TAG_PBUFFER);
+    if (!p) { RET(0); return; }
+    for (int i = 0; i < g_nctx; i++)
+        if (g_ctxs[i] && g_ctxs[i]->pbuf == p) g_ctxs[i]->pbuf = NULL;
+    if (g_default_fbo == p->fbo) {
+        g_default_fbo = 0;
+        glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
+    }
+    if (p->fbo) glDeleteFramebuffersEXT(1, &p->fbo);
+    if (p->depth) glDeleteRenderbuffersEXT(1, &p->depth);
+    if (p->own_tex && p->tex) glDeleteTextures(1, &p->tex);
+    gh_free(p->g);
+    free(p);
+    RET(1);
+}
 
 /* ---- CGL ---- */
 SHIM(_CGLChoosePixelFormat) {
@@ -392,7 +531,19 @@ SHIM(_CGLDestroyRendererInfo) { RET(0); }
 #define GUEST_DISPLAY_ID 0x04272c40u
 static const int kModes[][2] = {{800, 600}, {1024, 768}, {1152, 720}, {1280, 720}, {1280, 800}, {1280, 1024},
                                 {1366, 768}, {1440, 900}, {1600, 900}, {1680, 1050}, {1920, 1080}, {1920, 1200},
-                                {2560, 1440}, {2560, 1600}};
+                                {2560, 1440}, {2560, 1600},
+                                /* MacBook Air/Pro built-in panels: scaled "looks like" sizes, notch-free
+                                 * 16:10 areas, and full Retina resolutions */
+                                {1470, 956}, {1512, 945}, {1512, 982}, {1710, 1107}, {1728, 1080}, {1728, 1117},
+                                {1800, 1169}, {2056, 1329}, {2560, 1664}, {2880, 1864}, {3024, 1890}, {3024, 1964},
+                                {3420, 2214}, {3456, 2160}, {3456, 2234}};
+
+static CFIndex mode_area(CFDictionaryRef d);
+static int mode_int(CFDictionaryRef d, CFStringRef k);
+static CFComparisonResult by_area(const void *a, const void *b, void *ctx) {
+    CFIndex x = mode_area(a), y = mode_area(b);
+    return x < y ? kCFCompareLessThan : x > y ? kCFCompareGreaterThan : kCFCompareEqualTo;
+}
 
 static CFDictionaryRef make_mode(int w, int h) {
     int bpp = 32, mode = w * 10000 + h;
@@ -422,28 +573,45 @@ static CFDictionaryRef g_current_mode;
 
 static void ensure_modes(void) {
     if (g_modes) return;
-    NSRect sf = [[NSScreen screens][0] frame];
+    NSScreen *screen = [NSScreen screens][0];
+    NSRect sf = [screen frame];
+    double scale = [screen backingScaleFactor];
     int sw = (int)sf.size.width, sh = (int)sf.size.height;
+    int pw = (int)(sw * scale), ph = (int)(sh * scale); /* largest mode: the panel's pixels */
+    int notch = 0;
+    if (@available(macOS 12.0, *)) notch = (int)[screen safeAreaInsets].top;
+    /* Candidates: the table, plus this screen's own sizes (with and without the notch strip). */
+    int extra[4][2] = {{sw, sh}, {pw, ph}, {sw, sh - notch}, {pw, (int)(ph - notch * scale)}};
+    int cand[64][2], nc = 0;
+    for (size_t i = 0; i < sizeof kModes / sizeof kModes[0]; i++) memcpy(cand[nc++], kModes[i], sizeof cand[0]);
+    for (int i = 0; i < 4; i++) memcpy(cand[nc++], extra[i], sizeof cand[0]);
     CFMutableArrayRef a = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
-    int have_native = 0;
-    for (size_t i = 0; i < sizeof kModes / sizeof kModes[0]; i++) {
-        if (kModes[i][0] > sw || kModes[i][1] > sh) continue;
-        CFDictionaryRef d = make_mode(kModes[i][0], kModes[i][1]);
-        CFArrayAppendValue(a, d);
-        CFRelease(d);
-        if (kModes[i][0] == sw && kModes[i][1] == sh) have_native = 1;
-    }
-    if (!have_native) {
-        CFDictionaryRef d = make_mode(sw, sh);
+    for (int i = 0; i < nc; i++) {
+        if (cand[i][0] > pw || cand[i][1] > ph) continue;
+        int dup = 0;
+        for (int j = 0; j < i; j++) dup |= cand[j][0] == cand[i][0] && cand[j][1] == cand[i][1];
+        if (dup) continue;
+        CFDictionaryRef d = make_mode(cand[i][0], cand[i][1]);
         CFArrayAppendValue(a, d);
         CFRelease(d);
     }
+    CFArraySortValues(a, CFRangeMake(0, CFArrayGetCount(a)), by_area, NULL);
     g_modes = a;
+    if (getenv("CIV4_DEBUG_MODES"))
+        for (CFIndex i = 0; i < CFArrayGetCount(a); i++)
+            rt_log("mode %dx%d", mode_int(CFArrayGetValueAtIndex(a, i), CFSTR("Width")),
+                   mode_int(CFArrayGetValueAtIndex(a, i), CFSTR("Height")));
+    /* The "current" (desktop) mode is the screen's size in points. */
     g_current_mode = CFArrayGetValueAtIndex(a, CFArrayGetCount(a) - 1);
+    for (CFIndex i = 0; i < CFArrayGetCount(a); i++) {
+        CFDictionaryRef d = CFArrayGetValueAtIndex(a, i);
+        if (mode_area(d) == (CFIndex)sw * sh) g_current_mode = d;
+    }
     g_mode_w = sw;
     g_mode_h = sh;
 }
 
+static CFIndex mode_area(CFDictionaryRef d) { return (CFIndex)mode_int(d, CFSTR("Width")) * mode_int(d, CFSTR("Height")); }
 static int mode_int(CFDictionaryRef d, CFStringRef k) {
     int v = 0;
     CFNumberRef n = CFDictionaryGetValue(d, k);
@@ -488,6 +656,10 @@ SHIM(_CGDisplayAvailableModes) { ensure_modes(); RETCF(g_modes); }
 SHIM(_CGDisplayCurrentMode) { ensure_modes(); RETCF(g_current_mode); }
 static CFDictionaryRef best_mode(int w, int h, uint32_t exact_out) {
     ensure_modes();
+    /* CIV4_RESOLUTION=WxH overrides the resolution the game asks for. */
+    const char *force = getenv("CIV4_RESOLUTION");
+    int fw, fh;
+    if (force && sscanf(force, "%dx%d", &fw, &fh) == 2) w = fw, h = fh;
     CFDictionaryRef best = NULL;
     long best_d = LONG_MAX;
     for (CFIndex i = 0; i < CFArrayGetCount(g_modes); i++) {
@@ -542,7 +714,7 @@ const ShimDef shims_agl[] = {
     SHIM_ENTRY(_aglSetDrawable), SHIM_ENTRY(_aglGetDrawable), SHIM_ENTRY(_aglUpdateContext),
     SHIM_ENTRY(_aglSwapBuffers), SHIM_ENTRY(_aglSetInteger), SHIM_ENTRY(_aglGetInteger),
     SHIM_ENTRY(_aglGetVirtualScreen), SHIM_ENTRY(_aglSetFullScreen), SHIM_ENTRY(_aglUseFont),
-    SHIM_ENTRY(_aglCreatePBuffer), SHIM_ENTRY(_CGLChoosePixelFormat), SHIM_ENTRY(_CGLDestroyPixelFormat),
+    SHIM_ENTRY(_aglCreatePBuffer), SHIM_ENTRY(_aglTexImagePBuffer), SHIM_ENTRY(_aglSetPBuffer), SHIM_ENTRY(_aglDestroyPBuffer), SHIM_ENTRY(_CGLChoosePixelFormat), SHIM_ENTRY(_CGLDestroyPixelFormat),
     SHIM_ENTRY(_CGLCreateContext), SHIM_ENTRY(_CGLDestroyContext), SHIM_ENTRY(_CGLSetCurrentContext),
     SHIM_ENTRY(_CGLGetCurrentContext), SHIM_ENTRY(_CGLSetParameter), SHIM_ENTRY(_CGLClearDrawable),
     SHIM_ENTRY(_CGLQueryRendererInfo), SHIM_ENTRY(_CGLDescribeRenderer), SHIM_ENTRY(_CGLDestroyRendererInfo),
