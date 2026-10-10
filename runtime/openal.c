@@ -100,7 +100,13 @@ SHIM(_alListenerfv) {
     if (p == AL_GAIN && muted()) v[0] = 0;
     alListenerfv(p, v);
 }
-SHIM(_alSourcef) { alSourcef((ALuint)ARG(0), (ALenum)ARG(1), ARGF32(2)); }
+SHIM(_alSourcef) {
+    /* The game's volume math can go slightly negative; old OpenAL clamped, modern OpenAL rejects it. */
+    ALenum p = (ALenum)ARG(1);
+    ALfloat v = ARGF32(2);
+    if ((p == AL_GAIN || p == AL_MIN_GAIN || p == AL_MAX_GAIN) && v < 0) v = 0;
+    alSourcef((ALuint)ARG(0), p, v);
+}
 SHIM(_alSource3f) { alSource3f((ALuint)ARG(0), (ALenum)ARG(1), ARGF32(2), ARGF32(3), ARGF32(4)); }
 SHIM(_alSourcei) { alSourcei((ALuint)ARG(0), (ALenum)ARG(1), (ALint)ARG(2)); }
 SHIM(_alGetSourcef) {
