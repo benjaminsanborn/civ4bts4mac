@@ -962,7 +962,21 @@ SHIM(_QDRegisterNamedPixMapCursor) {
     int16_t bottom = (int16_t)R16_(g_mem, pm + 10), right = (int16_t)R16_(g_mem, pm + 12);
     int w = right - left, h = bottom - top;
     if (w <= 0 || h <= 0 || R16_(g_mem, pm + 32) != 32) { RET(-50); return; }
-    CFDataRef data = CFDataCreate(NULL, PTR(base), (CFIndex)rb * h);
+    /* ARGB pixels; a separate 8-bit mask (0 transparent, 0xff opaque), when
+     * given, says which of them are part of the cursor. */
+    CFMutableDataRef data = CFDataCreateMutable(NULL, (CFIndex)rb * h);
+    CFDataAppendBytes(data, PTR(base), (CFIndex)rb * h);
+    uint32_t mpm = ARG(1) ? R32_(g_mem, ARG(1)) : 0;
+    if (mpm && R16_(g_mem, mpm + 32) == 8) {
+        const uint8_t *m = PTR(R32_(g_mem, mpm));
+        int mrb = R16_(g_mem, mpm + 4) & 0x3fff;
+        uint8_t *px = CFDataGetMutableBytePtr(data);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                uint8_t *a = &px[y * rb + x * 4];
+                *a = (uint8_t)(*a * m[y * mrb + x] / 255);
+            }
+    }
     CGDataProviderRef dp = CGDataProviderCreateWithCFData(data);
     static CGColorSpaceRef cs;
     if (!cs) cs = CGColorSpaceCreateDeviceRGB();
@@ -972,6 +986,20 @@ SHIM(_QDRegisterNamedPixMapCursor) {
     NSImage *ni = [[NSImage alloc] initWithCGImage:img size:NSMakeSize(w, h)];
     int16_t hv = (int16_t)(ARG(2) & 0xffff), hh = (int16_t)(ARG(2) >> 16);
     NSCursor *c = [[NSCursor alloc] initWithImage:ni hotSpot:NSMakePoint(hh, hv)];
+    if (getenv("CIV4_DEBUG_CURSOR")) {
+        /* Opaque bounding box, to check the hotspot against the drawn pointer. */
+        int x0 = w, y0 = h, x1 = -1, y1 = -1;
+        const uint8_t *px = CFDataGetBytePtr(data);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (px[y * rb + x * 4] > 0x40) {
+                    if (x < x0) x0 = x;
+                    if (y < y0) y0 = y;
+                    if (x > x1) x1 = x;
+                    if (y > y1) y1 = y;
+                }
+        rt_log("cursor %s: %dx%d hotspot h=%d v=%d opaque x %d-%d y %d-%d", CPTR(ARG(3)), w, h, hh, hv, x0, x1, y0, y1);
+    }
     CGImageRelease(img);
     CGDataProviderRelease(dp);
     CFRelease(data);
