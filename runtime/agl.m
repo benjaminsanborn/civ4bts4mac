@@ -13,6 +13,7 @@
 
 #include "cf.h"
 #include "handles.h"
+#include "events.h"
 #include "platform.h"
 
 /* AGL attribute constants (agl.h, no longer in the SDK). */
@@ -282,7 +283,8 @@ SHIM(_aglSwapBuffers) {
         if (dt > 0.05) slow++;
         frames++;
         if (now - t0 >= 5) {
-            rt_log("fps %.1f  worst frame %.0f ms  frames over 50 ms: %d", frames / (now - t0), worst * 1000, slow);
+            rt_log("fps %.1f  worst frame %.0f ms  frames over 50 ms: %d  worst event gap %.0f ms", frames / (now - t0),
+                   worst * 1000, slow, plat_take_worst_event_gap() * 1000);
             frames = slow = 0;
             worst = 0;
             t0 = now;

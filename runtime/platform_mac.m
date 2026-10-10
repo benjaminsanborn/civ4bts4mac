@@ -489,6 +489,8 @@ static void translate(NSEvent *ev) {
 }
 
 static void simulate_become_key(HWindow *w);
+static void note_read(void);
+
 void plat_pump(double timeout) {
     ensure_app();
     g_heartbeat = CACurrentMediaTime();
@@ -534,6 +536,7 @@ void plat_pump(double timeout) {
         script_load();
     }
     script_run();
+    note_read();
     if ((g_script_pos < g_script_n || g_script_up || g_keystep_pos < g_nkeysteps) && timeout > 0.01) timeout = 0.01;
     @autoreleasepool {
         NSDate *until = timeout > 0 ? [NSDate dateWithTimeIntervalSinceNow:timeout] : [NSDate distantPast];
@@ -541,12 +544,47 @@ void plat_pump(double timeout) {
             NSEvent *ev = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:until inMode:NSDefaultRunLoopMode dequeue:YES];
             if (!ev) break;
             translate(ev);
+            note_read();
             /* Window management still goes through AppKit; key events would only beep. */
             NSEventType t = [ev type];
             if (t != NSEventTypeKeyDown && t != NSEventTypeKeyUp) [NSApp sendEvent:ev];
             until = [NSDate distantPast];
         }
     }
+}
+
+/* Late-game AI turns run a whole player's turn inside one game frame, which
+ * can take seconds; without reading the window server's queue meanwhile,
+ * macOS shows the busy cursor and can't move or close the window. rt_import
+ * calls this from the main thread now and then: it only queues events (as
+ * translate always does) for the game's next pump and runs no guest code. */
+static double g_last_read, g_worst_gap;
+double plat_take_worst_event_gap(void) {
+    double w = g_worst_gap;
+    g_worst_gap = 0;
+    return w;
+}
+static void note_read(void) {
+    double now = CACurrentMediaTime();
+    if (g_last_read && now - g_last_read > g_worst_gap) g_worst_gap = now - g_last_read;
+    g_last_read = now;
+}
+void plat_pump_busy(void) {
+    static int busy;
+    if (busy || !g_last_read || CACurrentMediaTime() - g_last_read < 0.1) return;
+    busy = 1;
+    note_read();
+    @autoreleasepool {
+        for (;;) {
+            NSEvent *ev = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate distantPast]
+                                                inMode:NSDefaultRunLoopMode dequeue:YES];
+            if (!ev) break;
+            translate(ev);
+            NSEventType t = [ev type];
+            if (t != NSEventTypeKeyDown && t != NSEventTypeKeyUp) [NSApp sendEvent:ev];
+        }
+    }
+    busy = 0;
 }
 
 uint32_t plat_mouse_buttons(void) { return g_buttons; }

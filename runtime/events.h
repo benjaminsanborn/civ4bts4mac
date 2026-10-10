@@ -83,6 +83,8 @@ uint32_t ev_app_target(void);
 /* Implemented by the platform layer: move pending OS input into the queue,
  * waiting up to `timeout` seconds for something to arrive. */
 void plat_pump(double timeout);
+void plat_pump_busy(void); /* read the window queue mid-frame; main thread only */
+double plat_take_worst_event_gap(void);
 
 double ev_now(void); /* EventTime: seconds since boot */
 

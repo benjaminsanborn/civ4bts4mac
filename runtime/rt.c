@@ -1,7 +1,9 @@
 /* Core runtime: guest arena, indirect-call dispatch, import routing. */
 #include "rt.h"
+#include "events.h"
 #include "functab.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -248,6 +250,7 @@ void rt_import(CPU *cpu, uint32_t id) {
         }
     }
     g_import_calls++;
+    if (__builtin_expect(!(g_import_calls & 0xfff), 0) && pthread_main_np()) plat_pump_busy();
     typeof(g_fr[0]) *e = &g_fr[g_import_calls % FR_N];
     uint32_t sp = cpu->r[4];
     e->n = g_import_calls;
