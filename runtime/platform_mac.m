@@ -4,6 +4,7 @@
  * Coordinates handed to the guest are QuickDraw globals: origin at the top
  * left of the main display, y down, in points. */
 #import <Cocoa/Cocoa.h>
+#import <ImageIO/ImageIO.h>
 
 #include <spawn.h>
 #include <sys/wait.h>
@@ -999,6 +1000,15 @@ SHIM(_QDRegisterNamedPixMapCursor) {
                     if (y > y1) y1 = y;
                 }
         rt_log("cursor %s: %dx%d hotspot h=%d v=%d opaque x %d-%d y %d-%d", CPTR(ARG(3)), w, h, hh, hv, x0, x1, y0, y1);
+        const char *dir = getenv("CIV4_DEBUG_CURSOR");
+        if (dir[0] == '/') { /* also save each cursor as PNG there */
+            char path[1024];
+            snprintf(path, sizeof path, "%s/cursor_%d.png", dir, (int)[g_cursors count]);
+            CFURLRef u = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+            CGImageDestinationRef d = CGImageDestinationCreateWithURL(u, CFSTR("public.png"), 1, NULL);
+            if (d) { CGImageDestinationAddImage(d, img, NULL); CGImageDestinationFinalize(d); CFRelease(d); }
+            CFRelease(u);
+        }
     }
     CGImageRelease(img);
     CGDataProviderRelease(dp);
