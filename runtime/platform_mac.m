@@ -487,6 +487,7 @@ static void translate(NSEvent *ev) {
     }
 }
 
+static void simulate_become_key(HWindow *w);
 void plat_pump(double timeout) {
     ensure_app();
     g_heartbeat = CACurrentMediaTime();
@@ -511,11 +512,19 @@ void plat_pump(double timeout) {
             phase = 1;
             rt_log("focus test: hiding");
             [NSApp hide:nil];
+            /* An app that never became active (terminal launch, locked screen)
+             * gets no activation notifications; deliver what AppKit would. */
+            if (![NSApp isActive])
+                [[NSNotificationCenter defaultCenter] postNotificationName:NSApplicationDidResignActiveNotification
+                                                                    object:NSApp];
         } else if (phase == 1 && CACurrentMediaTime() > focus_test + 5) {
             phase = 2;
             rt_log("focus test: unhiding");
             [NSApp unhide:nil];
             [NSApp activateIgnoringOtherApps:YES];
+            HWindow *w = display_window();
+            if (![NSApp isActive] && w)
+                simulate_become_key(w);
         }
     }
     static int script_init;
@@ -576,7 +585,7 @@ void plat_mouse_global(int16_t *v, int16_t *h) {
  * (the fullscreen port takes it from the game's helper windows at startup). */
 - (void)appDidResignActive:(NSNotification *)n {
     (void)n;
-    HWindow *w = g_focus;
+    HWindow *w = g_focus ? g_focus : display_window();
     if (!w || g_scripted) return; /* scripted runs keep the game window active */
     HEvent *e = ev_create(kEventClassWindow, kEventWindowDeactivated);
     ev_set_param(e, kEventParamDirectObject, typeWindowRef, &w->g, 4);
@@ -607,6 +616,10 @@ static WinDelegate *win_delegate(void) {
                                                    object:nil];
     }
     return delegate;
+}
+static void simulate_become_key(HWindow *w) {
+    [win_delegate() windowDidBecomeKey:[NSNotification notificationWithName:NSWindowDidBecomeKeyNotification
+                                                                     object:(__bridge NSWindow *)w->ns]];
 }
 
 /* ---- Window Manager shims ---- */
