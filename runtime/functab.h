@@ -10,7 +10,7 @@ extern "C" {
 /* Generated tables (functab.c). See tools/recomp/world.py for the layout. */
 typedef struct {
     uint32_t addr;
-    GuestFn fn;
+    LiftedFn fn;
 } FuncEntry;
 
 typedef struct {

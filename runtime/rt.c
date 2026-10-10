@@ -309,7 +309,7 @@ void rt_import(CPU *cpu, uint32_t id) {
  * never see a torn entry. Address 0 is never a function, so 0 means empty. */
 static _Atomic uint64_t g_lookup_cache[1u << 16];
 
-GuestFn rt_lookup(uint32_t target) {
+LiftedFn rt_lookup(uint32_t target) {
     _Atomic uint64_t *slot = &g_lookup_cache[(target * 2654435761u) >> 16];
     uint64_t v = atomic_load_explicit(slot, memory_order_relaxed);
     if ((uint32_t)(v >> 32) == target && target) return g_functab[(uint32_t)v].fn;
@@ -362,16 +362,42 @@ static int resolve(uint32_t target, uint32_t *out) {
     return 0;
 }
 
-void rt_dispatch(CPU *cpu, uint32_t target) {
-    if (__builtin_expect(g_pump_due, 0)) pump_if_main();
+static uint32_t dispatch_resolve(CPU *cpu, uint32_t target) {
     _Atomic uint64_t *slot = &g_dispatch_cache[(target * 2654435761u) >> 16];
     uint64_t v = atomic_load_explicit(slot, memory_order_relaxed);
+    if ((uint32_t)(v >> 32) == target && target) return (uint32_t)v;
     uint32_t r;
-    if ((uint32_t)(v >> 32) == target && target) r = (uint32_t)v;
-    else {
-        if (!resolve(target, &r)) { rt_unimpl(cpu, target, "dispatch miss"); return; }
-        atomic_store_explicit(slot, (uint64_t)target << 32 | r, memory_order_relaxed);
-    }
+    if (!resolve(target, &r)) rt_unimpl(cpu, target, "dispatch miss");
+    atomic_store_explicit(slot, (uint64_t)target << 32 | r, memory_order_relaxed);
+    return r;
+}
+
+/* Call a lifted function with the register state in cpu->r, and put its
+ * results back there (ebx/esi/edi are preserved by the callee). */
+void rt_enter(CPU *cpu, LiftedFn fn) {
+    uint32_t *r = cpu->r;
+    GRet g = fn(cpu, r[0], r[1], r[2], r[3], r[6], r[7], r[4] | (uint64_t)r[5] << 32);
+    r[0] = (uint32_t)g.ad;
+    r[2] = (uint32_t)(g.ad >> 32);
+    r[4] = (uint32_t)g.sb;
+    r[5] = (uint32_t)(g.sb >> 32);
+}
+
+/* Host code calling guest code (or an import) at `target`, state in cpu->r. */
+void rt_dispatch(CPU *cpu, uint32_t target) {
+    if (__builtin_expect(g_pump_due, 0)) pump_if_main();
+    uint32_t r = dispatch_resolve(cpu, target);
     if (r & DISPATCH_IMPORT) rt_import(cpu, r & ~DISPATCH_IMPORT);
-    else g_functab[r].fn(cpu);
+    else rt_enter(cpu, g_functab[r].fn);
+}
+
+/* Lifted code calling (or jumping) through a pointer: target in cpu->tgt. */
+GRet rt_dispatch_l(LARGS) {
+    if (__builtin_expect(g_pump_due, 0)) pump_if_main();
+    uint32_t r = dispatch_resolve(cpu, cpu->tgt);
+    if (!(r & DISPATCH_IMPORT)) return g_functab[r].fn(cpu, eax, ecx, edx, ebx, esi, edi, spbp_);
+    uint32_t esp = (uint32_t)spbp_, ebp = (uint32_t)(spbp_ >> 32);
+    SPILL;
+    rt_import(cpu, r & ~DISPATCH_IMPORT);
+    return gret(cpu->r[0], cpu->r[2], cpu->r[4], cpu->r[5]);
 }

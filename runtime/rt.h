@@ -31,9 +31,26 @@ typedef struct CPU {
     double st[8]; /* x87 stack, 64-bit precision only */
     uint32_t ftop;
     uint16_t fcw;
+    uint32_t tgt; /* indirect call/jump target, for rt_dispatch_l */
 } CPU;
 
-typedef void (*GuestFn)(CPU *);
+typedef void (*GuestFn)(CPU *); /* host shims */
+
+/* Lifted guest functions pass the integer registers as C arguments (esp and
+ * ebp packed into one, so everything fits in arm64's eight argument
+ * registers) and return eax:edx and esp:ebp in x0/x1. ebx/esi/edi are not
+ * returned: compiled i386 code preserves them across calls (the i386 ABI;
+ * the original callers rely on it too). cpu->r is only written around
+ * imports and read at landing pads, where host code needs the full state. */
+typedef struct { uint64_t ad, sb; } GRet; /* eax | edx << 32, esp | ebp << 32 */
+#define LARGS CPU *cpu, uint32_t eax, uint32_t ecx, uint32_t edx, uint32_t ebx, uint32_t esi, uint32_t edi, uint64_t spbp_
+typedef GRet (*LiftedFn)(LARGS);
+static inline GRet gret(uint32_t eax, uint32_t edx, uint32_t esp, uint32_t ebp) {
+    GRet r;
+    r.ad = eax | (uint64_t)edx << 32;
+    r.sb = esp | (uint64_t)ebp << 32;
+    return r;
+}
 
 /* Guest address of host import `id` (for function pointers to host code). */
 #define IMPORT_BASE 0x01C00000u
@@ -41,7 +58,9 @@ typedef void (*GuestFn)(CPU *);
 extern uint8_t *g_mem;
 
 void rt_dispatch(CPU *cpu, uint32_t target);
-GuestFn rt_lookup(uint32_t target);
+LiftedFn rt_lookup(uint32_t target);
+GRet rt_dispatch_l(LARGS);               /* indirect call to cpu->tgt from lifted code */
+void rt_enter(CPU *cpu, LiftedFn fn);     /* call a lifted function with the state in cpu->r */
 void rt_import(CPU *cpu, uint32_t id);
 void rt_start_pump_ticker(void); /* see plat_pump_busy */
 _Noreturn void rt_unimpl(CPU *cpu, uint32_t addr, const char *what);
@@ -88,6 +107,18 @@ static inline void WF64_(uint8_t *M, uint32_t a, double v) { memcpy(M + a, &v, 8
 #define RELOAD \
     (eax = cpu->r[0], ecx = cpu->r[1], edx = cpu->r[2], ebx = cpu->r[3], \
      esp = cpu->r[4], ebp = cpu->r[5], esi = cpu->r[6], edi = cpu->r[7])
+
+/* Lifted-function framing (see LARGS). */
+#define LPROLOGUE \
+    uint8_t *const M = g_mem; \
+    uint32_t esp = (uint32_t)spbp_, ebp = (uint32_t)(spbp_ >> 32); \
+    uint32_t CF = 0, PF = 0, ZF = 0, SF = 0, OF = 0; \
+    (void)M; (void)CF; (void)PF; (void)ZF; (void)SF; (void)OF
+#define LRET return gret(eax, edx, esp, ebp)
+#define LPASS cpu, eax, ecx, edx, ebx, esi, edi, esp | (uint64_t)ebp << 32
+#define LTAKE(r) (eax = (uint32_t)(r).ad, edx = (uint32_t)((r).ad >> 32), esp = (uint32_t)(r).sb, ebp = (uint32_t)((r).sb >> 32))
+#define LCALL(f) do { GRet r_ = f(LPASS); LTAKE(r_); } while (0)
+#define LTAIL(f) return f(LPASS)
 
 #define XMM(i) (cpu->xmm[i])
 

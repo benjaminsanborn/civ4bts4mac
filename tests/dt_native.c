@@ -64,14 +64,14 @@ static void *runner(void *arg) {
     t_job = job;
     stack_t ss = {.ss_sp = malloc(1 << 20), .ss_size = 1 << 20, .ss_flags = 0};
     sigaltstack(&ss, NULL);
-    GuestFn fn = rt_lookup(job->fn);
+    LiftedFn fn = rt_lookup(job->fn);
     if (!fn) {
         job->code = DT_NOFUNC;
         return NULL;
     }
     if (sigsetjmp(t_env, 1) == 0) {
         t_active = 1;
-        fn(&job->cpu);
+        rt_enter(&job->cpu, fn);
         job->code = DT_OK;
     }
     t_active = 0;

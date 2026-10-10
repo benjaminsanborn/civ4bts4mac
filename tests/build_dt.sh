@@ -16,5 +16,5 @@ __attribute__((weak)) void rt_report_watch(void *cpu, int i, uint32_t o, uint32_
 }
 STUBS
 grep -ho '^OVERRIDE([A-Za-z0-9_$]*)' runtime/*.c | sed 's/OVERRIDE(\(.*\))/__attribute__((weak)) void ov_\1(void *cpu) { (void)cpu; }/' >> build/dt_stubs.c
-clang -shared -O2 -flto=thin -w -Iruntime runtime/rt.c tests/dt_native.c build/dt_stubs.c -Wl,-all_load build/libgame.a -lc++ -o build/libdt.dylib
-echo "built build/libdt.dylib"
+clang -shared -O2 -flto=thin -w -Iruntime runtime/rt.c tests/dt_native.c build/dt_stubs.c -Wl,-all_load ${LIBGAME:-build/libgame.a} -lc++ -o ${OUT:-build/libdt.dylib}
+echo "built ${OUT:-build/libdt.dylib}"

@@ -245,7 +245,12 @@ def main():
         if outcome in ("pass:return", "pass:import"):
             eregs = emu.regs()
             # At an import trap the native side spilled registers before the call.
-            bad = [f"{RNAMES[i]} emu={eregs[i]:#x} nat={nregs[i]:#x}" for i in range(8) if eregs[i] != nregs[i]]
+            # ecx is scratch across calls (i386 ABI): lifted functions don't
+            # return it, so after a call it keeps the caller's value. Imports
+            # don't read it. ebx/esi/edi must match (callees preserve them).
+            skip = {1}
+            bad = [f"{RNAMES[i]} emu={eregs[i]:#x} nat={nregs[i]:#x}" for i in range(8)
+                   if i not in skip and eregs[i] != nregs[i]]
             if bad:
                 outcome = "FAIL:regs"
                 detail = " ".join(bad)

@@ -30,7 +30,7 @@ def _lift(entry: int) -> Tuple[int, str, List[int], List[str]]:
     try:
         c = f.lift()
     except Exception as e:  # keep going; a broken function becomes a trap
-        c = (f"void f_{entry:08x}(CPU *cpu) {{ rt_unimpl(cpu, 0x{entry:x}u, \"lifter crash\"); }}\n")
+        c = (f"GRet f_{entry:08x}(LARGS) {{ rt_unimpl(cpu, 0x{entry:x}u, \"lifter crash\"); }}\n")
         f.unsupported.append(f"lifter crash: {type(e).__name__}: {e}")
     return entry, c, sorted(f.calls), f.unsupported
 
@@ -61,7 +61,8 @@ def main() -> None:
             pending = set()
             for e in [b for b in batch if b in overrides]:
                 done[e] = (f"void ov_{overrides[e]}(CPU *cpu);\n"
-                           f"void f_{e:08x}(CPU *cpu) {{ ov_{overrides[e]}(cpu); cpu->r[4] += 4; /* host override */ }}\n")
+                           f"GRet f_{e:08x}(LARGS) {{ LPROLOGUE; SPILL; ov_{overrides[e]}(cpu); /* host override */\n"
+                           f"    cpu->r[4] += 4; RELOAD; LRET; }}\n")
             batch = [b for b in batch if b not in overrides]
             for i, (entry, c, calls, unsup) in enumerate(pool.imap_unordered(_lift, batch, chunksize=64)):
                 done[entry] = c
@@ -88,7 +89,7 @@ def main() -> None:
         for e in chunk:
             refs.update(int(x[2:10], 16) for x in _refs(done[e]))
         for r in sorted(refs | set(chunk)):
-            parts.append(f"void f_{r:08x}(CPU *cpu);\n")
+            parts.append(f"GRet f_{r:08x}(LARGS);\n")
         for e in chunk:
             parts.append("\n" + done[e])
         parts.append("}\n")
@@ -105,7 +106,7 @@ def main() -> None:
     with io.StringIO() as out:
         out.write('#include "rt.h"\n#include "functab.h"\n')
         for e in entries:
-            out.write(f"void f_{e:08x}(CPU *cpu);\n")
+            out.write(f"GRet f_{e:08x}(LARGS);\n")
         out.write("const FuncEntry g_functab[] = {\n")
         for e in entries:
             out.write(f"    {{0x{e:x}u, f_{e:08x}}},\n")
@@ -182,7 +183,7 @@ def _write_if_changed(path: str, text: str) -> None:
 
 def _refs(c: str):
     import re
-    return re.findall(r"f_[0-9a-f]{8}\(cpu\)", c)
+    return re.findall(r"\bf_[0-9a-f]{8}\b", c)
 
 
 if __name__ == "__main__":

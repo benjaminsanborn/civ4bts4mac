@@ -1,6 +1,7 @@
 """i386 -> C static recompiler.
 
-Each guest function becomes `void f_XXXXXXXX(CPU *cpu)`. Control flow inside a
+Each guest function becomes `GRet f_XXXXXXXX(LARGS)` (registers in and out as
+C values; see runtime/rt.h). Control flow inside a
 function is recovered by recursive descent from its entry; flags are kept in C
 locals and only computed where a later instruction can read them (backward
 liveness over the instruction-level CFG).
@@ -423,7 +424,7 @@ class Func:
                 else:  # after a no-return call: padding or inline data follows
                     body.append(f'    rt_unimpl(cpu, 0x{nxt:x}u, "fell off function end");')
         # Labels can be added late (fallthrough gotos); re-emit them.
-        out = [f"void f_{self.entry:08x}(CPU *cpu) {{", "    PROLOGUE;"]
+        out = [f"GRet f_{self.entry:08x}(LARGS) {{", "    LPROLOGUE;"]
         if self.pads:
             # The runtime unwinder throws GuestUnwind{target, esp0} to install a
             # landing pad in this invocation (identified by its entry esp).
@@ -441,6 +442,7 @@ class Func:
                     "        RELOAD;",
                     "        goto rt_retry_;",
                     "    }"]
+        out.append("    LRET; /* not reached */")
         text = "\n".join(out)
         for a in self.labels:
             if f"L_{a:x}:;" not in text and a in self.insns:
@@ -450,11 +452,11 @@ class Func:
     def tail_call(self, target: int) -> List[str]:
         kind, val = self.p.resolve_call(target)
         if kind == "import":
-            return [f"SPILL; rt_import(cpu, {val}); /* {self.p.import_name(val)} */ return;"]
+            return [f"SPILL; rt_import(cpu, {val}); RELOAD; LRET; /* {self.p.import_name(val)} */"]
         if not self.p.in_text(val):
             return [f'rt_unimpl(cpu, 0x{target:x}u, "jump outside text");']
         self.calls.add(val)
-        return [f"SPILL; f_{val:08x}(cpu); return;"]
+        return [f"LTAIL(f_{val:08x});"]
 
 
 def _noreturn(name: str) -> bool:
@@ -639,7 +641,7 @@ class Emit:
             for t in sorted(set(tbl)):
                 s.append(f"case 0x{t:x}u: goto L_{t:x};")
             s.append("}")
-        s.append("SPILL; rt_dispatch(cpu, t_); return; }")
+        s.append("cpu->tgt = t_; LTAIL(rt_dispatch_l); }")
         return [" ".join(s)]
 
     def i_call(self):
@@ -653,13 +655,18 @@ class Emit:
                 return [f"PUSH32(0x{self.next:x}u); SPILL; rt_import(cpu, {val}); RELOAD; /* {self.f.p.import_name(val)} */"]
             if not self.f.p.in_text(val):
                 raise Unsupported("call outside text")
+            name = self.f.p.names.get(val, "")
+            if name.startswith("___i686.get_pc_thunk."):
+                # PIC thunk: loads its return address into a register (not
+                # ABI-preserving, so done inline instead of called).
+                return [f"{_reg32('e' + name.rsplit('.', 1)[1])} = 0x{self.next:x}u;"]
             self.f.calls.add(val)
-            return [f"PUSH32(0x{self.next:x}u); SPILL; f_{val:08x}(cpu); RELOAD;"]
-        return [f"{{ uint32_t t_ = {self.rd(op)}; PUSH32(0x{self.next:x}u); SPILL; rt_dispatch(cpu, t_); RELOAD; }}"]
+            return [f"PUSH32(0x{self.next:x}u); LCALL(f_{val:08x});"]
+        return [f"{{ uint32_t t_ = {self.rd(op)}; PUSH32(0x{self.next:x}u); cpu->tgt = t_; LCALL(rt_dispatch_l); }}"]
 
     def i_ret(self):
         n = 4 + (self.ops[0].imm if self.ops else 0)
-        return [f"esp += {n}u; SPILL; return;"]
+        return [f"esp += {n}u; LRET;"]
 
     def i_leave(self):
         return ["esp = ebp; ebp = R32(esp); esp += 4;"]
