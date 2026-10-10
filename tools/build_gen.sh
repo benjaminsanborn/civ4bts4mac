@@ -1,14 +1,16 @@
 #!/bin/sh
 # Compile a generated directory into a static library: build_gen.sh GENDIR OUT.a
+# OBJ=dir keeps objects elsewhere (e.g. for a build with different CFLAGS).
 set -e
 GEN=$(cd "$1" && pwd); OUT=$2
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-mkdir -p "$GEN/obj"
-export GEN ROOT TOTAL=$(ls "$GEN"/*.c | wc -l | tr -d ' ')
+OBJ=${OBJ:-$GEN/obj}
+mkdir -p "$OBJ"
+export GEN OBJ ROOT TOTAL=$(ls "$GEN"/*.c | wc -l | tr -d ' ')
 ls "$GEN"/*.c | xargs -P "$(sysctl -n hw.ncpu)" -n 1 sh -c '
-  o="$GEN/obj/$(basename "$1" .c).o"
+  o="$OBJ/$(basename "$1" .c).o"
   case "$(basename "$1")" in part_*) LANG="-x c++ -std=gnu++17";; *) LANG="";; esac
   [ "$o" -nt "$1" ] || clang $LANG -c -w -O1 -gline-tables-only ${CFLAGS:-} -I"$ROOT/runtime" "$1" -o "$o" || exit 255
-  echo "@@progress {\"done\": $(ls "$GEN"/obj/*.o | wc -l | tr -d " "), \"total\": $TOTAL}"' sh
-rm -f "$OUT"; ar rcs "$OUT" "$GEN"/obj/*.o
+  echo "@@progress {\"done\": $(ls "$OBJ"/*.o | wc -l | tr -d " "), \"total\": $TOTAL}"' sh
+rm -f "$OUT"; ar rcs "$OUT" "$OBJ"/*.o
 echo "built $OUT"
