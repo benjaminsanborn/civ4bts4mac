@@ -141,6 +141,7 @@ SHIM(_SetQDGlobalsRandomSeed) {}
 
 /* ---- keyboard state (KeyMap: 128 bits); filled by the event layer ---- */
 uint8_t g_keymap[16];
+void NSBeep_c(void); /* platform_mac.m */
 SHIM(_GetKeys) { memcpy(PTR(ARG(0)), g_keymap, 16); }
 
 /* ---- Apple Events: accepted, never delivered ---- */
@@ -158,10 +159,43 @@ SHIM(_FindNextComponent) { RET(1); }
 /* ---- Memory Manager handles (movies are in movies.m) ---- */
 SHIM(_DisposeHandle) { if (ARG(0)) { gfree(R32_(g_mem, ARG(0))); gfree(ARG(0)); } }
 
+SHIM(_HLock) {}
+SHIM(_HUnlock) {}
+SHIM(_PtrToHand) {
+    /* (const void *src, Handle *dst, long size) */
+    uint32_t n = ARG(2), data = gmalloc(n ? n : 1), h = gmalloc(4);
+    memcpy(PTR(data), PTR(ARG(0)), n);
+    W32_(g_mem, h, data);
+    W32_(g_mem, ARG(1), h);
+    RET(noErr);
+}
+SHIM(_ReleaseResource) {}
+SHIM(_SysBeep) { NSBeep_c(); }
+SHIM(_SetFrontProcess) { RET(noErr); }
+SHIM(_FMDeactivateFonts) { RET(noErr); }
+SHIM(_GetScriptVariable) { RET(0); }
+SHIM(_SectRect) {
+    /* (const Rect *a, const Rect *b, Rect *out) -> Boolean; Rect = {top, left, bottom, right} */
+    int16_t a[4], b[4], r[4];
+    memcpy(a, PTR(ARG(0)), 8);
+    memcpy(b, PTR(ARG(1)), 8);
+    r[0] = a[0] > b[0] ? a[0] : b[0];
+    r[1] = a[1] > b[1] ? a[1] : b[1];
+    r[2] = a[2] < b[2] ? a[2] : b[2];
+    r[3] = a[3] < b[3] ? a[3] : b[3];
+    int ok = r[0] < r[2] && r[1] < r[3];
+    if (!ok) memset(r, 0, sizeof r);
+    memcpy(PTR(ARG(2)), r, 8);
+    RET(ok);
+}
+
 /* ---- Debugger: log instead of trapping ---- */
 SHIM(_Debugger) { rt_log("guest called Debugger()"); }
 
 const ShimDef shims_carbon[] = {
+    SHIM_ENTRY(_HLock), SHIM_ENTRY(_HUnlock), SHIM_ENTRY(_PtrToHand), SHIM_ENTRY(_ReleaseResource),
+    SHIM_ENTRY(_SysBeep), SHIM_ENTRY(_SetFrontProcess), SHIM_ENTRY(_FMDeactivateFonts),
+    SHIM_ENTRY(_GetScriptVariable), SHIM_ENTRY(_SectRect),
     SHIM_ENTRY(_MPAllocateTaskStorageIndex), SHIM_ENTRY(_MPDeallocateTaskStorageIndex),
     SHIM_ENTRY(_MPSetTaskStorageValue), SHIM_ENTRY(_MPGetTaskStorageValue), SHIM_ENTRY(_MPProcessors),
     SHIM_ENTRY(_MPAllocateAligned), SHIM_ENTRY(_MPFree), SHIM_ENTRY(_NewPtrClear), SHIM_ENTRY(_DisposePtr),

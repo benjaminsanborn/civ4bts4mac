@@ -282,11 +282,6 @@ SHIM(_ctime) {
     ctime_r(&tt, PTR(buf));
     RET(buf);
 }
-SHIM(_select$DARWIN_EXTSN) {
-    /* Only used as a sleep (no fds) by the guest. */
-    if (ARG(4)) usleep(R32_(g_mem, ARG(4)) * 1000000u + R32_(g_mem, ARG(4) + 4));
-    RET(0);
-}
 
 /* ---- pthread conditions, attributes, misc ---- */
 #define COND_LIVE 0x434f4e44u /* 'COND': opaque holds a host pointer */
@@ -340,8 +335,7 @@ const ShimDef shims_posix[] = {
     SHIM_ENTRY(_getlogin), SHIM_ENTRY(_sysconf), SHIM_ENTRY(_uname), SHIM_ENTRY(__NSGetExecutablePath),
     SHIM_ENTRY(_system$UNIX2003), SHIM_ENTRY(_sigaction), SHIM_ENTRY(_siginterrupt), SHIM_ENTRY(_alarm),
     SHIM_ENTRY(_kill$UNIX2003), SHIM_ENTRY(_gettimeofday), SHIM_ENTRY(_tzset), SHIM_ENTRY(_times),
-    SHIM_ENTRY(_gmtime), SHIM_ENTRY(_mktime$UNIX2003), SHIM_ENTRY(_ctime), SHIM_ENTRY(_select$DARWIN_EXTSN),
-    SHIM_ENTRY(_pthread_cond_init$UNIX2003), SHIM_ENTRY(_pthread_cond_destroy), SHIM_ENTRY(_pthread_cond_signal),
+    SHIM_ENTRY(_gmtime), SHIM_ENTRY(_mktime$UNIX2003), SHIM_ENTRY(_ctime), SHIM_ENTRY(_pthread_cond_init$UNIX2003), SHIM_ENTRY(_pthread_cond_destroy), SHIM_ENTRY(_pthread_cond_signal),
     SHIM_ENTRY(_pthread_cond_broadcast), SHIM_ENTRY(_pthread_cond_wait$UNIX2003), SHIM_ENTRY(_pthread_attr_init),
     SHIM_ENTRY(_pthread_attr_destroy), SHIM_ENTRY(_pthread_attr_setscope), SHIM_ENTRY(_pthread_attr_setstacksize),
     SHIM_ENTRY(_pthread_detach), SHIM_ENTRY(_pthread_self),

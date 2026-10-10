@@ -378,7 +378,7 @@ static void load_world(const char *path) {
 }
 
 extern const ShimDef shims_libc[], shims_stdio[], shims_pthread[], shims_cf[], shims_files[], shims_posix[], shims_carbon[], shims_dyld[], shims_events[],
-    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[], shims_movies[], shims_unwind[], shims_openal[];
+    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[], shims_movies[], shims_unwind[], shims_openal[], shims_net[];
 
 static void register_all_shims(void) {
     rt_register_shims(shims_libc);
@@ -400,10 +400,14 @@ static void register_all_shims(void) {
     rt_register_shims(shims_quickdraw);
     rt_register_shims(shims_movies);
     rt_register_shims(shims_openal);
+    rt_register_shims(shims_net);
     rt_register_shims(shims_unwind);
     uint32_t have = 0;
     for (uint32_t i = 0; i < g_import_count; i++) have += g_import_shims[i] != NULL;
     rt_log("%u/%u host imports implemented", have, g_import_count);
+    if (getenv("CIV4_LIST_MISSING"))
+        for (uint32_t i = 0; i < g_import_count; i++)
+            if (!g_import_shims[i]) rt_log("missing import %s", g_import_names[i]);
 }
 
 void rt_libc_init(CPU *cpu, int argc, char **argv);

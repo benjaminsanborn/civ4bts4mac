@@ -840,6 +840,7 @@ SHIM(_QDSetNamedPixMapCursor) {
     [c set];
     RET(noErr);
 }
+/* (sic: Apple's API name is misspelled) */
 SHIM(_QDUnregisterNamedPixMapCursur) {
     [g_cursors removeObjectForKey:[NSString stringWithUTF8String:CPTR(ARG(0))]];
     RET(noErr);
@@ -899,6 +900,8 @@ SHIM(_DisableMenuCommand) {}
 SHIM(_EnableMenuCommand) {}
 SHIM(_CGAssociateMouseAndMouseCursorPosition) { RET(CGAssociateMouseAndMouseCursorPosition((boolean_t)ARG(0))); }
 SHIM(_CGSetLocalEventsSuppressionInterval) { RET(0); }
+
+void NSBeep_c(void) { NSBeep(); }
 
 /* ---- menu bar ---- */
 SHIM(_HideMenuBar) { [NSMenu setMenuBarVisible:NO]; }
