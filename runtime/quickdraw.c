@@ -8,6 +8,9 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
 #include <string.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <dirent.h>
 
 #include "handles.h"
 
@@ -61,10 +64,55 @@ static const char *family_name(int16_t id) {
     return id == 0 ? "Lucida Grande" : "Helvetica"; /* systemFont / applFont */
 }
 
+/* The UI's theme asks for Sylfaen, which ships with the game: make every
+ * bundled TrueType font available to CoreText for this process. */
+const char *rt_build_path(const char *rel, char *buf, size_t n);
+static void register_game_fonts(void) {
+    /* Resource/Civ4 has the full family (regular, bold, italic, bold italic). */
+    static const char *dirs[] = {"game/Resource/Civ4", "game/Resource/Fonts"};
+    char dir[PATH_MAX];
+    for (size_t d = 0; d < sizeof dirs / sizeof *dirs; d++) {
+        DIR *dp = opendir(rt_build_path(dirs[d], dir, sizeof dir));
+        if (getenv("CIV4_DEBUG_FONTS")) rt_log("font dir %s: %s", dir, dp ? "found" : "missing");
+        if (!dp) continue;
+        for (struct dirent *e; (e = readdir(dp));) {
+            size_t n = strlen(e->d_name);
+            if (n < 4 || strcasecmp(e->d_name + n - 4, ".ttf")) continue;
+            char path[PATH_MAX];
+            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+            CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+            CFErrorRef err = NULL;
+            int ok = CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &err);
+            if (getenv("CIV4_DEBUG_FONTS")) rt_log("register font %s: %s", path, ok ? "ok" : "failed");
+            if (err) CFRelease(err);
+            CFRelease(url);
+        }
+        closedir(dp);
+    }
+}
+
 static CTFontRef make_font(const PortState *s) {
+    static int fonts_registered;
+    if (!fonts_registered) {
+        fonts_registered = 1;
+        register_game_fonts();
+    }
     CFStringRef name = CFStringCreateWithCString(NULL, family_name(s->font), kCFStringEncodingMacRoman);
     CGFloat size = s->size > 0 ? s->size : 12;
     CTFontRef f = CTFontCreateWithName(name, size, NULL);
+    static int debug = -1;
+    if (debug < 0) debug = getenv("CIV4_DEBUG_FONTS") != NULL;
+    if (debug) {
+        CFStringRef got = CTFontCopyFamilyName(f);
+        /* (Sylfaen reports its family as "SylfaenARM") */
+        if (!CFStringHasPrefix(got, name))
+        {
+            char gotc[128] = "";
+            CFStringGetCString(got, gotc, sizeof gotc, kCFStringEncodingUTF8);
+            rt_log("font '%s' substituted by '%s'", family_name(s->font), gotc);
+        }
+        CFRelease(got);
+    }
     CFRelease(name);
     CTFontSymbolicTraits traits = 0;
     if (s->face & 1) traits |= kCTFontBoldTrait;

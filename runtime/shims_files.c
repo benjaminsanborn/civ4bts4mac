@@ -560,6 +560,7 @@ SHIM(_FSpRstFLock) { RET(noErr); }
 SHIM(_FMActivateFonts) {
     char path[PATH_MAX];
     if (!ARG(0) || fsspec_path(ARG(0), path, sizeof path)) { RET(fnfErr); return; }
+    if (getenv("CIV4_DEBUG_FONTS")) rt_log("FMActivateFonts %s", path);
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
     CFErrorRef err = NULL;
     if (!CTFontManagerRegisterFontsForURL(url, kCTFontManagerScopeProcess, &err) && err) CFRelease(err);
