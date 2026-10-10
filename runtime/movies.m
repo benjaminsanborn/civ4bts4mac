@@ -9,6 +9,7 @@
 #import <QuartzCore/QuartzCore.h>
 
 #include "cf.h"
+#include <pthread.h>
 #include "handles.h"
 
 #define TAG_MOVIE 0x4d4f5649u /* 'MOVI' */
@@ -46,7 +47,33 @@ typedef struct {
 } HCallBack;
 static NSMutableArray *g_callbacks; /* NSValue(HCallBack*) */
 
-static NSMutableArray *g_movies; /* NSValue(HMovie*) of live movies, for MoviesTask(NULL) */
+/* The game drives music from its own QuickTime thread (MoviesTask) while the
+ * main thread creates and disposes movies: every movie call holds this lock. */
+static pthread_mutex_t g_movie_lock;
+static void movie_lock_init(void) {
+    pthread_mutexattr_t a;
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g_movie_lock, &a);
+}
+static int movie_lock(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, movie_lock_init);
+    pthread_mutex_lock(&g_movie_lock);
+    return 0;
+}
+static void movie_unlock(int *unused) { (void)unused; pthread_mutex_unlock(&g_movie_lock); }
+#define MOVIE_LOCK int movie_lock_ __attribute__((cleanup(movie_unlock), unused)) = movie_lock()
+
+static NSMutableArray *g_movies;
+
+/* Guest callbacks found under the lock run after it is released. */
+typedef struct { uint32_t proc, a, b; } PendingCall;
+static PendingCall g_pending[64];
+static int g_npending;
+static void defer_call(uint32_t proc, uint32_t a, uint32_t b) {
+    if (g_npending < 64) g_pending[g_npending++] = (PendingCall){proc, a, b};
+} /* NSValue(HMovie*) of live movies, for MoviesTask(NULL) */
 
 static HMovie *movie_of(uint32_t g) { return gh_get(g, TAG_MOVIE); }
 
@@ -59,13 +86,13 @@ static uint32_t make_dataref(const char *path) {
     return h;
 }
 
-SHIM(_QTNewDataReferenceFromFSRef) {
+SHIM(_QTNewDataReferenceFromFSRef) { MOVIE_LOCK;
     /* (const FSRef *, flags, Handle *outDataRef, OSType *outDataRefType) */
     W32_(g_mem, ARG(2), make_dataref(rt_fsref_path(ARG(0))));
     if (ARG(3)) W32_(g_mem, ARG(3), 'alis');
     RET(noErr);
 }
-SHIM(_QTNewDataReferenceFromFullPathCFString) {
+SHIM(_QTNewDataReferenceFromFullPathCFString) { MOVIE_LOCK;
     /* (CFStringRef path, pathStyle, flags, Handle *outDataRef, OSType *outDataRefType) */
     char path[PATH_MAX];
     CFStringGetCString(CFI(0), path, sizeof path, kCFStringEncodingUTF8);
@@ -93,7 +120,7 @@ static NSURL *transcoded_url(const char *path) {
     return [NSURL fileURLWithPath:[NSString stringWithUTF8String:out]];
 }
 
-SHIM(_NewMovieFromDataRef) {
+SHIM(_NewMovieFromDataRef) { MOVIE_LOCK;
     /* (Movie *out, short flags, short *id, Handle dataRef, OSType dataRefType) */
     W32_(g_mem, ARG(0), 0);
     uint32_t h = ARG(3);
@@ -131,7 +158,7 @@ SHIM(_NewMovieFromDataRef) {
     RET(noErr);
 }
 
-SHIM(_DisposeMovie) {
+SHIM(_DisposeMovie) { MOVIE_LOCK;
     HMovie *m = movie_of(ARG(0));
     if (!m) return;
     for (NSValue *v in g_callbacks) {
@@ -149,15 +176,15 @@ SHIM(_DisposeMovie) {
 }
 
 /* ---- geometry and destination ---- */
-SHIM(_SetMovieGWorld) { HMovie *m = movie_of(ARG(0)); if (m) m->gworld = ARG(1); }
-SHIM(_GetMovieGWorld) {
+SHIM(_SetMovieGWorld) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); if (m) m->gworld = ARG(1); }
+SHIM(_GetMovieGWorld) { MOVIE_LOCK;
     HMovie *m = movie_of(ARG(0));
     if (ARG(1)) W32_(g_mem, ARG(1), m ? m->gworld : 0);
     if (ARG(2)) W32_(g_mem, ARG(2), 0x6764);
 }
-SHIM(_GetMovieBox) { HMovie *m = movie_of(ARG(0)); if (m) memcpy(PTR(ARG(1)), m->box, 8); }
-SHIM(_SetMovieBox) { HMovie *m = movie_of(ARG(0)); if (m) memcpy(m->box, PTR(ARG(1)), 8); }
-SHIM(_SetMovieDrawingCompleteProc) {
+SHIM(_GetMovieBox) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); if (m) memcpy(PTR(ARG(1)), m->box, 8); }
+SHIM(_SetMovieBox) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); if (m) memcpy(m->box, PTR(ARG(1)), 8); }
+SHIM(_SetMovieDrawingCompleteProc) { MOVIE_LOCK;
     /* (movie, flags, MovieDrawingCompleteUPP proc, long refCon) */
     HMovie *m = movie_of(ARG(0));
     if (m) { m->done_proc = ARG(2); m->done_refcon = ARG(3); }
@@ -169,24 +196,24 @@ static void seek(HMovie *m, double t) {
     m->ended = 0;
     [m->player seekToTime:CMTimeMakeWithSeconds(t, TIMESCALE) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
 }
-SHIM(_StartMovie) {
+SHIM(_StartMovie) { MOVIE_LOCK;
     HMovie *m = movie_of(ARG(0));
     if (!m) return;
     m->playing = 1;
     m->ended = 0;
     m->player.rate = m->rate;
 }
-SHIM(_StopMovie) {
+SHIM(_StopMovie) { MOVIE_LOCK;
     HMovie *m = movie_of(ARG(0));
     if (!m) return;
     m->playing = 0;
     [m->player pause];
 }
-SHIM(_GoToBeginningOfMovie) { HMovie *m = movie_of(ARG(0)); if (m) seek(m, 0); }
-SHIM(_GoToEndOfMovie) { HMovie *m = movie_of(ARG(0)); if (m) seek(m, m->duration); }
-SHIM(_SetMovieTimeValue) { HMovie *m = movie_of(ARG(0)); if (m) seek(m, (double)(int32_t)ARG(1) / TIMESCALE); }
-SHIM(_IsMovieDone) { HMovie *m = movie_of(ARG(0)); RET(!m || movie_seconds(m) >= m->duration - 0.05); }
-SHIM(_GetMovieTime) {
+SHIM(_GoToBeginningOfMovie) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); if (m) seek(m, 0); }
+SHIM(_GoToEndOfMovie) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); if (m) seek(m, m->duration); }
+SHIM(_SetMovieTimeValue) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); if (m) seek(m, (double)(int32_t)ARG(1) / TIMESCALE); }
+SHIM(_IsMovieDone) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); RET(!m || movie_seconds(m) >= m->duration - 0.05); }
+SHIM(_GetMovieTime) { MOVIE_LOCK;
     /* (movie, TimeRecord *out) -> TimeValue; TimeRecord {SInt64 value; TimeScale scale; TimeBase base} */
     HMovie *m = movie_of(ARG(0));
     int64_t v = m ? (int64_t)(movie_seconds(m) * TIMESCALE) : 0;
@@ -197,24 +224,24 @@ SHIM(_GetMovieTime) {
     }
     RET((uint32_t)v);
 }
-SHIM(_GetMovieTimeScale) { RET(TIMESCALE); }
-SHIM(_GetMovieDuration) { HMovie *m = movie_of(ARG(0)); RET(m ? (uint32_t)(m->duration * TIMESCALE) : 0); }
-SHIM(_GetMovieTimeBase) { RET(ARG(0)); }
-SHIM(_GetMoviePreferredRate) { HMovie *m = movie_of(ARG(0)); RET(m ? (uint32_t)(m->rate * 65536) : 0x10000); }
-SHIM(_SetMoviePreferredRate) { HMovie *m = movie_of(ARG(0)); if (m) m->rate = (int32_t)ARG(1) / 65536.0f; }
-SHIM(_GetMovieVolume) { HMovie *m = movie_of(ARG(0)); RET(m ? (uint32_t)(uint16_t)m->volume : 0x100); }
-SHIM(_SetMovieVolume) {
+SHIM(_GetMovieTimeScale) { MOVIE_LOCK; RET(TIMESCALE); }
+SHIM(_GetMovieDuration) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); RET(m ? (uint32_t)(m->duration * TIMESCALE) : 0); }
+SHIM(_GetMovieTimeBase) { MOVIE_LOCK; RET(ARG(0)); }
+SHIM(_GetMoviePreferredRate) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); RET(m ? (uint32_t)(m->rate * 65536) : 0x10000); }
+SHIM(_SetMoviePreferredRate) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); if (m) m->rate = (int32_t)ARG(1) / 65536.0f; }
+SHIM(_GetMovieVolume) { MOVIE_LOCK; HMovie *m = movie_of(ARG(0)); RET(m ? (uint32_t)(uint16_t)m->volume : 0x100); }
+SHIM(_SetMovieVolume) { MOVIE_LOCK;
     HMovie *m = movie_of(ARG(0));
     if (!m) return;
     m->volume = (int16_t)ARG(1);
     m->player.volume = m->volume <= 0 ? 0 : m->volume / 256.0f;
 }
-SHIM(_GetMovieAudioBalance) { if (ARG(1)) WF32_(g_mem, ARG(1), 0); RET(noErr); }
-SHIM(_SetMovieAudioBalance) { RET(noErr); }
-SHIM(_SetMovieActive) {}
-SHIM(_SetMovieActiveSegment) {}
-SHIM(_PrerollMovie) { RET(noErr); }
-SHIM(_LoadMovieIntoRam) { RET(noErr); }
+SHIM(_GetMovieAudioBalance) { MOVIE_LOCK; if (ARG(1)) WF32_(g_mem, ARG(1), 0); RET(noErr); }
+SHIM(_SetMovieAudioBalance) { MOVIE_LOCK; RET(noErr); }
+SHIM(_SetMovieActive) { MOVIE_LOCK;}
+SHIM(_SetMovieActiveSegment) { MOVIE_LOCK;}
+SHIM(_PrerollMovie) { MOVIE_LOCK; RET(noErr); }
+SHIM(_LoadMovieIntoRam) { MOVIE_LOCK; RET(noErr); }
 
 /* Draw the frame for "now" into the movie's GWorld, scaled into its box. */
 static void draw_frame(CPU *cpu, HMovie *m) {
@@ -242,10 +269,10 @@ static void draw_frame(CPU *cpu, HMovie *m) {
     CGContextDrawImage(ctx, r, img);
     CGContextRestoreGState(ctx);
     CGImageRelease(img);
-    if (m->done_proc) rt_call(cpu, m->done_proc, 2, m->g, m->done_refcon);
+    if (m->done_proc) defer_call(m->done_proc, m->g, m->done_refcon);
 }
 
-SHIM(_NewCallBack) {
+SHIM(_NewCallBack) { MOVIE_LOCK;
     /* (TimeBase, short callBackType) */
     HCallBack *cb = calloc(1, sizeof *cb);
     cb->movie = ARG(0);
@@ -255,7 +282,7 @@ SHIM(_NewCallBack) {
     [g_callbacks addObject:[NSValue valueWithPointer:cb]];
     RET(cb->g);
 }
-SHIM(_CallMeWhen) {
+SHIM(_CallMeWhen) { MOVIE_LOCK;
     /* (QTCallBack, QTCallBackUPP proc, long refCon, long param1, long param2, long param3) */
     HCallBack *cb = gh_get(ARG(0), TAG_CALLBACK);
     if (!cb) { RET(-50); return; }
@@ -265,11 +292,11 @@ SHIM(_CallMeWhen) {
     cb->armed = 1;
     RET(noErr);
 }
-SHIM(_CancelCallBack) {
+SHIM(_CancelCallBack) { MOVIE_LOCK;
     HCallBack *cb = gh_get(ARG(0), TAG_CALLBACK);
     if (cb) cb->armed = 0;
 }
-SHIM(_DisposeCallBack) {
+SHIM(_DisposeCallBack) { MOVIE_LOCK;
     HCallBack *cb = gh_get(ARG(0), TAG_CALLBACK);
     if (!cb) return;
     [g_callbacks removeObject:[NSValue valueWithPointer:cb]];
@@ -285,22 +312,32 @@ static void check_end(CPU *cpu, HMovie *m) {
         HCallBack *cb = [v pointerValue];
         if (cb->movie != m->g || !cb->armed || cb->type != 4 /* callBackAtExtremes */) continue;
         cb->armed = 0;
-        rt_call(cpu, cb->proc, 2, cb->g, cb->refcon);
+        defer_call(cb->proc, cb->g, cb->refcon);
     }
 }
 
 SHIM(_MoviesTask) {
     /* (movie or NULL for all, long maxMilliSecToUse) */
-    if (ARG(0)) {
-        HMovie *m = movie_of(ARG(0));
-        if (m) draw_frame(cpu, m), check_end(cpu, m);
-        return;
+    PendingCall calls[64];
+    int n;
+    {
+        MOVIE_LOCK;
+        g_npending = 0;
+        if (ARG(0)) {
+            HMovie *m = movie_of(ARG(0));
+            if (m) draw_frame(cpu, m), check_end(cpu, m);
+        } else {
+            for (NSValue *v in [g_movies copy]) {
+                HMovie *m = [v pointerValue];
+                draw_frame(cpu, m);
+                check_end(cpu, m);
+            }
+        }
+        n = g_npending;
+        memcpy(calls, g_pending, sizeof calls[0] * (size_t)n);
+        g_npending = 0;
     }
-    for (NSValue *v in [g_movies copy]) {
-        HMovie *m = [v pointerValue];
-        draw_frame(cpu, m);
-        if ([g_movies containsObject:v]) check_end(cpu, m);
-    }
+    for (int i = 0; i < n; i++) rt_call(cpu, calls[i].proc, 2, calls[i].a, calls[i].b);
 }
 
 const ShimDef shims_movies[] = {

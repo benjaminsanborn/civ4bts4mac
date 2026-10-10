@@ -34,10 +34,11 @@ SHIM(_IORegistryEntryCreateCFProperty) {
     }
     RETCF_OWNED(v);
 }
-/* The CPU-speed probe walks IOService matches; report none (Gestalt answers instead). */
+/* The CPU-speed probe walks IOService matches. Succeed with an empty iterator:
+ * the game then asks Gestalt('mclk'). (Failing makes it report 0 MHz.) */
 SHIM(_IOMasterPort) { W32_(g_mem, ARG(1), 0); RET(0); }
 SHIM(_IOServiceNameMatching) { RET(0); }
-SHIM(_IOServiceGetMatchingServices) { W32_(g_mem, ARG(2), 0); RET(0xe00002c2); }
+SHIM(_IOServiceGetMatchingServices) { W32_(g_mem, ARG(2), 0x2001); RET(0); }
 SHIM(_IOIteratorNext) { RET(0); }
 SHIM(_IOObjectRelease) { RET(0); }
 

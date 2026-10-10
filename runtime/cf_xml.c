@@ -152,14 +152,84 @@ SHIM(_CFXMLCreateStringByUnescapingEntities) {
 }
 
 /* ---- CFTree (CFXMLTree is a CFTree) ---- */
+/* CFTrees are linked lists, so CFTreeGetChildAtIndex is O(index). The game's
+ * XML whitespace stripper walks every node's children by index (looking at
+ * i-1, i, i+1 and removing nodes), which is quadratic on wide nodes and made
+ * XML loading dominate game start. Keep the children of recently used parents
+ * in arrays (per thread), updated by the mutating shims. Parents are retained
+ * while cached, so a freed tree's address can't alias a cache entry. */
+#define KID_CACHE 16
+typedef struct { CFTreeRef parent; CFTreeRef *kids; CFIndex n, cap; unsigned long used; } KidCache;
+static __thread KidCache t_kids[KID_CACHE];
+static __thread unsigned long t_kid_clock;
+
+static KidCache *kids_find(CFTreeRef parent) {
+    for (int i = 0; i < KID_CACHE; i++)
+        if (t_kids[i].parent == parent) {
+            t_kids[i].used = ++t_kid_clock;
+            return &t_kids[i];
+        }
+    return NULL;
+}
+static KidCache *kids_of(CFTreeRef parent) {
+    KidCache *k = kids_find(parent);
+    if (k) return k;
+    k = &t_kids[0];
+    for (int i = 1; i < KID_CACHE; i++)
+        if (t_kids[i].used < k->used) k = &t_kids[i];
+    if (k->parent) CFRelease(k->parent);
+    k->parent = (CFTreeRef)CFRetain(parent);
+    k->n = CFTreeGetChildCount(parent);
+    if (k->n > k->cap) {
+        k->cap = k->n * 2 + 16;
+        k->kids = realloc(k->kids, (size_t)k->cap * sizeof *k->kids);
+    }
+    if (k->n) CFTreeGetChildren(parent, (CFTreeRef *)k->kids);
+    k->used = ++t_kid_clock;
+    return k;
+}
+
 SHIM(_CFTreeGetChildCount) { RET(CFTreeGetChildCount(CFI(0))); }
-SHIM(_CFTreeGetChildAtIndex) { RETCF(CFTreeGetChildAtIndex(CFI(0), (CFIndex)(int32_t)ARG(1))); }
+SHIM(_CFTreeGetChildAtIndex) {
+    KidCache *k = kids_of(CFI(0));
+    CFIndex i = (CFIndex)(int32_t)ARG(1);
+    RETCF(i >= 0 && i < k->n ? k->kids[i] : NULL);
+}
 SHIM(_CFTreeGetFirstChild) { RETCF(CFTreeGetFirstChild(CFI(0))); }
 SHIM(_CFTreeGetNextSibling) { RETCF(CFTreeGetNextSibling(CFI(0))); }
 SHIM(_CFTreeGetParent) { RETCF(CFTreeGetParent(CFI(0))); }
 SHIM(_CFTreeFindRoot) { RETCF(CFTreeFindRoot(CFI(0))); }
-SHIM(_CFTreeAppendChild) { CFTreeAppendChild(CFI(0), CFI(1)); }
-SHIM(_CFTreeRemove) { CFTreeRemove(CFI(0)); }
+SHIM(_CFTreeAppendChild) {
+    CFTreeRef parent = CFI(0), child = CFI(1);
+    CFTreeAppendChild(parent, child);
+    KidCache *k = kids_find(parent);
+    if (!k) return;
+    if (k->n == k->cap) {
+        k->cap = k->cap * 2 + 16;
+        k->kids = realloc(k->kids, (size_t)k->cap * sizeof *k->kids);
+    }
+    k->kids[k->n++] = child;
+}
+SHIM(_CFTreeRemove) {
+    CFTreeRef child = CFI(0), parent = CFTreeGetParent(child);
+    KidCache *k = parent ? kids_find(parent) : NULL;
+    if (k) {
+        CFIndex i = 0;
+        while (i < k->n && k->kids[i] != child) i++;
+        if (i < k->n) {
+            memmove(&k->kids[i], &k->kids[i + 1], (size_t)(k->n - i - 1) * sizeof *k->kids);
+            k->n--;
+        } else {
+            k->n = -1; /* out of sync: drop the entry */
+        }
+        if (k->n < 0) {
+            CFRelease(k->parent);
+            k->parent = NULL;
+            k->n = 0;
+        }
+    }
+    CFTreeRemove(child);
+}
 
 /* ---- Carbon standard alerts: log the text, answer with the default button ---- */
 SHIM(_GetStandardAlertDefaultParams) { memset(PTR(ARG(0)), 0, 32); RET(noErr); }

@@ -264,7 +264,9 @@ SHIM(_aglSwapBuffers) {
     double now_s = CACurrentMediaTime();
     HWindow *hw = gh_get(c->port, TAG_PORT);
     NSWindow *nw = hw ? (__bridge NSWindow *)hw->ns : nil;
-    if (nw && !([nw occlusionState] & NSWindowOcclusionStateVisible) && now_s - last_swap < 1.0 / 30)
+    static int no_throttle = -1;
+    if (no_throttle < 0) no_throttle = getenv("CIV4_NO_THROTTLE") != NULL; /* for measurements */
+    if (!no_throttle && nw && !([nw occlusionState] & NSWindowOcclusionStateVisible) && now_s - last_swap < 1.0 / 30)
         usleep((useconds_t)((1.0 / 30 - (now_s - last_swap)) * 1e6));
     last_swap = CACurrentMediaTime();
     /* CIV4_FPS: every 5 seconds, log the frame rate and the slow frames (hitches). */
