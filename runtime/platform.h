@@ -29,5 +29,6 @@ void plat_mouse_global(int16_t *v, int16_t *h);
 void plat_display_mode(int *w, int *h); /* current virtual display mode (agl.m) */
 void plat_default_resolution(int *w, int *h); /* first-run resolution (agl.m) */
 int plat_fix_saved_height(int w, int h);      /* notch-free height for a full-screen size */
+int plat_mode_offered(int w, int h);          /* in the resolution list (agl.m) */
 
 #endif

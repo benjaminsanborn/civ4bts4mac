@@ -56,6 +56,7 @@ static inline GRet gret(uint32_t eax, uint32_t edx, uint32_t esp, uint32_t ebp) 
 #define IMPORT_BASE 0x01C00000u
 
 extern uint8_t *g_mem;
+int rt_guest_readable(uint32_t addr); /* rt.c */
 
 void rt_dispatch(CPU *cpu, uint32_t target);
 LiftedFn rt_lookup(uint32_t target);

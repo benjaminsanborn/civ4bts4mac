@@ -658,27 +658,41 @@ void plat_display_mode(int *w, int *h) {
 static CFArrayRef g_modes;
 static CFDictionaryRef g_current_mode;
 
+static NSScreen *main_screen(void) {
+    [NSApplication sharedApplication]; /* the window server connection: NSScreen is empty before it */
+    NSArray *screens = [NSScreen screens];
+    return screens.count ? screens[0] : nil;
+}
+
 static void ensure_modes(void) {
     if (g_modes) return;
-    NSScreen *screen = [NSScreen screens][0];
+    NSScreen *screen = main_screen();
     NSRect sf = [screen frame];
     double scale = [screen backingScaleFactor];
     int sw = (int)sf.size.width, sh = (int)sf.size.height;
-    int pw = (int)(sw * scale), ph = (int)(sh * scale); /* largest mode: the panel's pixels */
     int notch = 0;
     if (@available(macOS 12.0, *)) notch = (int)[screen safeAreaInsets].top;
-    /* Candidates: the table, plus this screen's own sizes (with and without the notch strip). */
-    int extra[4][2] = {{sw, sh}, {pw, ph}, {sw, sh - notch}, {pw, (int)(ph - notch * scale)}};
+    /* The game is shown in the screen area below the notch. Offer only modes
+     * that look right there: that area's size and its full Retina pixel size
+     * (exactly 1 and 2 screen pixels per game pixel), and smaller modes of
+     * about the same shape (scaled up, smooth). Modes between the two get scaled
+     * down by an odd factor, which makes text shimmer and fringe, and other
+     * shapes get black bars. */
+    int aw = sw, ah = sh - notch;
+    double aspect = (double)aw / ah;
+    int extra[2][2] = {{aw, ah}, {(int)(aw * scale), (int)(ah * scale)}};
     int cand[64][2], nc = 0;
     for (size_t i = 0; i < sizeof kModes / sizeof kModes[0]; i++) memcpy(cand[nc++], kModes[i], sizeof cand[0]);
-    for (int i = 0; i < 4; i++) memcpy(cand[nc++], extra[i], sizeof cand[0]);
+    for (int i = 0; i < 2; i++) memcpy(cand[nc++], extra[i], sizeof cand[0]);
     CFMutableArrayRef a = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
     for (int i = 0; i < nc; i++) {
-        if (cand[i][0] > pw || cand[i][1] > ph) continue;
+        int w = cand[i][0], h = cand[i][1];
+        int exact = (w == extra[0][0] && h == extra[0][1]) || (w == extra[1][0] && h == extra[1][1]);
+        if (!exact && (w > aw || h > ah || fabs((double)w / h / aspect - 1) > 0.06)) continue;
         int dup = 0;
-        for (int j = 0; j < i; j++) dup |= cand[j][0] == cand[i][0] && cand[j][1] == cand[i][1];
+        for (int j = 0; j < i; j++) dup |= cand[j][0] == w && cand[j][1] == h;
         if (dup) continue;
-        CFDictionaryRef d = make_mode(cand[i][0], cand[i][1]);
+        CFDictionaryRef d = make_mode(w, h);
         CFArrayAppendValue(a, d);
         CFRelease(d);
     }
@@ -688,11 +702,11 @@ static void ensure_modes(void) {
         for (CFIndex i = 0; i < CFArrayGetCount(a); i++)
             rt_log("mode %dx%d", mode_int(CFArrayGetValueAtIndex(a, i), CFSTR("Width")),
                    mode_int(CFArrayGetValueAtIndex(a, i), CFSTR("Height")));
-    /* The "current" (desktop) mode is the screen's size in points. */
+    /* The "current" (desktop) mode is the area below the notch, in points. */
     g_current_mode = CFArrayGetValueAtIndex(a, CFArrayGetCount(a) - 1);
     for (CFIndex i = 0; i < CFArrayGetCount(a); i++) {
         CFDictionaryRef d = CFArrayGetValueAtIndex(a, i);
-        if (mode_area(d) == (CFIndex)sw * sh) g_current_mode = d;
+        if (mode_int(d, CFSTR("Width")) == aw && mode_int(d, CFSTR("Height")) == ah) g_current_mode = d;
     }
     g_mode_w = sw;
     g_mode_h = sh;
@@ -702,11 +716,6 @@ static void ensure_modes(void) {
  * screen's size in points, minus the camera notch strip (the picture is kept
  * below it), so each game pixel maps to whole screen pixels (2x2 on Retina)
  * instead of being scaled by an odd factor, which blurs text. */
-static NSScreen *main_screen(void) {
-    [NSApplication sharedApplication]; /* the window server connection: NSScreen is empty before it */
-    NSArray *screens = [NSScreen screens];
-    return screens.count ? screens[0] : nil;
-}
 void plat_default_resolution(int *w, int *h) {
     NSScreen *screen = main_screen();
     if (!screen) { *w = *h = 0; return; }
@@ -715,6 +724,18 @@ void plat_default_resolution(int *w, int *h) {
     if (@available(macOS 12.0, *)) notch = (int)[screen safeAreaInsets].top;
     *w = (int)sf.size.width;
     *h = (int)sf.size.height - notch;
+}
+
+/* Whether w x h is one of the modes offered (a saved choice may be a size that
+ * isn't, from before the list was narrowed or from another screen). */
+int plat_mode_offered(int w, int h) {
+    if (!main_screen()) return 1;
+    ensure_modes();
+    for (CFIndex i = 0; i < CFArrayGetCount(g_modes); i++) {
+        CFDictionaryRef d = CFArrayGetValueAtIndex(g_modes, i);
+        if (mode_int(d, CFSTR("Width")) == w && mode_int(d, CFSTR("Height")) == h) return 1;
+    }
+    return 0;
 }
 
 /* A saved mode of the full notched screen (points or pixels) can only be shown

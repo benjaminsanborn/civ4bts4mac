@@ -272,7 +272,14 @@ static size_t gformat(WOut *o, uint32_t fmt, int wide, uint32_t va) {
                 if (*p >= '1' && *p <= '9') { width = atoi(p); break; }
             size_t start = o->len;
             if (!s) { wputs_n(o, "(null)", 6); break; }
+            /* Bad pointers print as "(invalid)" instead of faulting: the game's
+             * FPythonMgr::ErrorMsg passes vsnprintf an uninitialized va_list. */
             for (size_t k = 0; prec < 0 || (int)k < prec; k++) {
+                uint32_t at = is_wide ? s + 4 * (uint32_t)k : s + (uint32_t)k;
+                if ((k == 0 || (at & 0x3fff) < (is_wide ? 4u : 1u)) && !rt_guest_readable(at)) {
+                    wputs_n(o, "(invalid)", 9);
+                    break;
+                }
                 wchar_t ch = is_wide ? (wchar_t)R32_(g_mem, s + 4 * k) : (wchar_t)R8_(g_mem, s + k);
                 if (!ch) break;
                 wput(o, ch);

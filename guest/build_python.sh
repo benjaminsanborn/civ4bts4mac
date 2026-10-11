@@ -18,9 +18,17 @@ cc1() { # cc1 SOURCE [extra flags]
 }
 
 for f in "$SRC"/Parser/*.c; do
-    case $(basename "$f") in pgenmain.c|tokenizer_pgen.c|printgrammar.c|intrcheck.c) continue;; esac
+    case $(basename "$f") in pgenmain.c|tokenizer_pgen.c|printgrammar.c|intrcheck.c|tokenizer.c) continue;; esac
     cc1 "$f"
 done
+# Non-ASCII bytes in a source file without a coding declaration are accepted as
+# they are, as in the Python 2.4 that Civ4 mods were written for (2.5+ makes it a
+# SyntaxError; map scripts such as Planet Generator have them in comments).
+sed 's/^    if (badchar) {$/    if (0 \&\& badchar) {/' "$SRC/Parser/tokenizer.c" > "$OUT/tokenizer_lenient.c.new"
+grep -q 'if (0 && badchar)' "$OUT/tokenizer_lenient.c.new"
+if cmp -s "$OUT/tokenizer_lenient.c.new" "$OUT/tokenizer_lenient.c"; then rm "$OUT/tokenizer_lenient.c.new"
+else mv "$OUT/tokenizer_lenient.c.new" "$OUT/tokenizer_lenient.c"; fi
+[ "$OUT/Parser_tokenizer.o" -nt "$OUT/tokenizer_lenient.c" ] || $CC $DEFS $INC -I"$SRC/Parser" -c "$OUT/tokenizer_lenient.c" -o "$OUT/Parser_tokenizer.o"
 for f in "$SRC"/Objects/*.c; do cc1 "$f"; done
 for f in "$SRC"/Python/*.c; do
     case $(basename "$f") in dynload_*|mactoolboxglue.c|sigcheck.c|frozenmain.c|atof.c|dup2.c|getcwd.c|strdup.c|strtod.c) continue;; esac
@@ -42,4 +50,6 @@ $CC $DEFS $INC -c "$ROOT/guest/python/config.c" -o "$OUT/config.o"
 # Standard library (pure Python), as the system Python 2.6 framework used to provide it.
 mkdir -p "$ROOT/build/pylib/lib"
 rsync -a --delete --exclude test --exclude '*.pyc' "$SRC/Lib/" "$ROOT/build/pylib/lib/python2.6/"
+# Stand-ins for C modules the guest doesn't have, so socket/urllib/webbrowser import.
+cp "$ROOT"/guest/python/*.py "$ROOT/build/pylib/lib/python2.6/"
 echo "built $(ls "$OUT"/*.o | wc -l | tr -d ' ') objects in $OUT"

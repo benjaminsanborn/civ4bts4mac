@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 
 uint8_t *g_mem;
 
@@ -27,6 +29,26 @@ int rt_arena_init(void) {
 
 int rt_arena_protect(uint32_t addr, uint32_t size, int prot) {
     return mprotect(g_mem + addr, size, prot);
+}
+
+/* Whether the guest byte at addr can be read (for shims given untrusted
+ * pointers). Pages only ever become readable, so readable pages are cached. */
+int rt_guest_readable(uint32_t addr) {
+    enum { PAGE_SHIFT_ = 14, SLOTS = 64 };
+    static _Atomic uint32_t cache[SLOTS]; /* page number + 1 */
+    uint32_t page = addr >> PAGE_SHIFT_;
+    if (atomic_load_explicit(&cache[page % SLOTS], memory_order_relaxed) == page + 1) return 1;
+    mach_vm_address_t a = (mach_vm_address_t)(uintptr_t)(g_mem + ((uint64_t)page << PAGE_SHIFT_));
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t n = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t obj = MACH_PORT_NULL;
+    if (mach_vm_region(mach_task_self(), &a, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &n, &obj))
+        return 0;
+    if (a > (mach_vm_address_t)(uintptr_t)(g_mem + ((uint64_t)page << PAGE_SHIFT_)) || !(info.protection & VM_PROT_READ))
+        return 0;
+    atomic_store_explicit(&cache[page % SLOTS], page + 1, memory_order_relaxed);
+    return 1;
 }
 
 /* Shims for imported (host-library) functions, indexed by import id.
