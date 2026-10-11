@@ -1,8 +1,14 @@
 #!/bin/sh
 # Full build: guest libraries -> linked modules -> lifted C -> static library.
-#   tools/build.sh [GAME_BINARY]
+#   tools/build.sh [--setup] [GAME_BINARY]
+# Runs tools/setup.sh first (choose the game installation, BUG Mod) if it
+# hasn't been run yet, or with --setup.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+if [ "$1" = --setup ] || [ ! -f "$ROOT/build/setup.json" ] || [ ! -e "$ROOT/build/game" ]; then
+    [ "$1" = --setup ] && shift
+    "$ROOT/tools/setup.sh"
+fi
 GAME=${1:-"$ROOT/build/game/Beyond the Sword/Civilization IV Beyond the Sword.app/Contents/MacOS/Civilization IV Beyond the Sword"}
 PY="$ROOT/.venv/bin/python"
 cd "$ROOT"

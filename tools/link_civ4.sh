@@ -3,6 +3,8 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
+# The game installation is chosen in the setup window (tools/setup.sh).
+[ -e build/game ] || tools/setup.sh
 mkdir -p build/rt
 CFLAGS="-O2 -g -Wall -Wno-unused-function -Wno-unused-but-set-variable -Iruntime"
 for f in runtime/*.c; do
