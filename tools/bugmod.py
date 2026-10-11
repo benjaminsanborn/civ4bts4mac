@@ -106,7 +106,7 @@ def install(docs: str, mode: str):
     with tempfile.TemporaryDirectory() as tmp:
         with zipfile.ZipFile(zpath) as z:
             z.extractall(tmp)
-        written, backed_up = [], []
+        written, backed_up, created = [], [], []
         backup_root = os.path.join(docs, BACKUP)
         for src, rel in plan(tmp, mode):
             existing = find_existing(docs, rel)
@@ -117,11 +117,17 @@ def install(docs: str, mode: str):
                 os.makedirs(os.path.dirname(bpath), exist_ok=True)
                 shutil.copy2(existing, bpath)
                 backed_up.append(os.path.relpath(existing, docs))
+            # Note the folders this install creates (only those are removed again).
+            d = os.path.dirname(dest)
+            while len(d) > len(docs) and not os.path.exists(d):
+                created.append(os.path.relpath(d, docs))
+                d = os.path.dirname(d)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.copy2(src, dest)
             written.append(os.path.relpath(dest, docs))
     with open(os.path.join(docs, MANIFEST), "w") as f:
-        json.dump({"version": "4.4", "mode": mode, "files": written, "backed_up": backed_up}, f, indent=1)
+        json.dump({"version": "4.4", "mode": mode, "files": written, "backed_up": backed_up,
+                   "created_dirs": created}, f, indent=1)
     progress(f"Installed BUG Mod 4.4 ({mode}): {len(written)} files")
 
 
@@ -142,12 +148,11 @@ def uninstall(docs: str):
         if os.path.exists(b):
             os.makedirs(os.path.dirname(os.path.join(docs, rel)), exist_ok=True)
             shutil.move(b, os.path.join(docs, rel))
-    # Remove folders the install left empty.
-    for rel in sorted({os.path.dirname(r) for r in m["files"]}, key=len, reverse=True):
+    # Remove the folders the install created, if nothing else is in them now.
+    for rel in sorted(m.get("created_dirs", []), key=len, reverse=True):
         d = os.path.join(docs, rel)
-        while d.startswith(docs + os.sep) and os.path.isdir(d) and not os.listdir(d):
+        if os.path.isdir(d) and not os.listdir(d):
             os.rmdir(d)
-            d = os.path.dirname(d)
     shutil.rmtree(backup_root, ignore_errors=True)
     os.remove(mpath)
     progress(f"Removed BUG Mod ({m['mode']}): {len(m['files'])} files, {len(m['backed_up'])} restored")

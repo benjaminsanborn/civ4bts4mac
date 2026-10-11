@@ -113,7 +113,7 @@ enum BugMod {
         ditto.waitUntilExit()
         guard ditto.terminationStatus == 0 else { throw Failure(description: "Couldn't unpack BUG Mod.") }
         try fm.createDirectory(at: docs, withIntermediateDirectories: true)
-        var written: [String] = [], backedUp: [String] = []
+        var written: [String] = [], backedUp: [String] = [], created: [String] = []
         let backupRoot = docs.appendingPathComponent(backupName)
         for (src, rel) in plan(src: tmp, mode: mode) {
             let existing = findExisting(docs: docs, rel: rel)
@@ -127,11 +127,19 @@ enum BugMod {
                 backedUp.append(destRel)
                 try fm.removeItem(at: existing)
             }
+            // Note the folders this install creates (only those are removed again).
+            var d = dest.deletingLastPathComponent(), missing: [String] = []
+            while d.path.count > docs.path.count, !fm.fileExists(atPath: d.path) {
+                missing.append(String(d.path.dropFirst(docs.path.count + 1)))
+                d = d.deletingLastPathComponent()
+            }
+            created.append(contentsOf: missing)
             try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             try fm.copyItem(at: src, to: dest)
             written.append(destRel)
         }
-        let manifest: [String: Any] = ["version": "4.4", "mode": mode, "files": written, "backed_up": backedUp]
+        let manifest: [String: Any] = ["version": "4.4", "mode": mode, "files": written, "backed_up": backedUp,
+                                       "created_dirs": created]
         try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted])
             .write(to: docs.appendingPathComponent(manifestName))
     }
@@ -149,13 +157,10 @@ enum BugMod {
             try? fm.createDirectory(at: d.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? fm.moveItem(at: b, to: d)
         }
-        // Remove folders the install left empty.
-        for dir in Set(files.map { ($0 as NSString).deletingLastPathComponent }).sorted(by: { $0.count > $1.count }) {
-            var d = docs.appendingPathComponent(dir)
-            while d.path.hasPrefix(docs.path + "/"), (try? fm.contentsOfDirectory(atPath: d.path))?.isEmpty == true {
-                try? fm.removeItem(at: d)
-                d = d.deletingLastPathComponent()
-            }
+        // Remove the folders the install created, if nothing else is in them now.
+        for dir in (m["created_dirs"] as? [String] ?? []).sorted(by: { $0.count > $1.count }) {
+            let d = docs.appendingPathComponent(dir)
+            if (try? fm.contentsOfDirectory(atPath: d.path))?.isEmpty == true { try? fm.removeItem(at: d) }
         }
         try? fm.removeItem(at: backupRoot)
         try fm.removeItem(at: mpath)

@@ -270,7 +270,7 @@ struct SetupView: View {
                         The BTS Unaltered Gameplay mod: a much richer interface (scoreboard, city and unit details, \
                         advisors, a clock, reminders) with the rules left exactly as they are. Downloaded from \
                         SourceForge (2.8 MB) and installed in your Documents folder, not in the game; \
-                        turning this off later removes it and restores anything it replaced.
+                        turning this off later removes it (keeping its settings) and restores anything it replaced.
                         """)
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Picker("Load it", selection: $model.bugMode) {
