@@ -57,6 +57,7 @@ typedef struct {
     GLuint buffer;
     void *host;
     uint32_t guest, size;
+    int explicit_flush; /* only flushed ranges are copied to the buffer */
 } Mapping;
 #define MAX_MAPS 16
 static Mapping g_maps[MAX_MAPS];
@@ -74,10 +75,18 @@ SHIM(_glMapBufferARB) {
     GLint size = 0;
     glGetBufferParameterivARB(target, GL_BUFFER_SIZE_ARB, &size);
     uint32_t g = gmemalign(16, (uint32_t)size);
-    if (access != GL_WRITE_ONLY_ARB) memcpy(PTR(g), h, (size_t)size);
+    /* With BUFFER_FLUSHING_UNMAP_APPLE off, only the ranges the guest flushes
+     * reach the buffer; the rest keeps its contents. */
+    GLint flush = 1;
+    glGetBufferParameterivARB(target, GL_BUFFER_FLUSHING_UNMAP_APPLE, &flush);
+    flush = !flush;
+    /* The shadow must start as the buffer's contents: a write-only map may still
+     * change just part of it, and unmap copies the whole shadow back. With
+     * explicit flushing only flushed ranges are copied, so it needn't. */
+    if (access != GL_WRITE_ONLY_ARB || !flush) memcpy(PTR(g), h, (size_t)size);
     for (int i = 0; i < MAX_MAPS; i++) {
         if (!g_maps[i].host) {
-            g_maps[i] = (Mapping){target, bound(target), h, g, (uint32_t)size};
+            g_maps[i] = (Mapping){target, bound(target), h, g, (uint32_t)size, flush};
             RET(g);
             return;
         }
@@ -102,9 +111,9 @@ SHIM(_glFlushMappedBufferRangeAPPLE) {
 SHIM(_glUnmapBufferARB) {
     Mapping *m = mapping_for(ARG(0));
     if (m) {
-        /* With FLUSHING_UNMAP disabled the guest flushes ranges itself; copying the
-         * whole shadow is still correct since unflushed ranges are undefined. */
-        memcpy(m->host, PTR(m->guest), m->size);
+        /* With explicit flushing the flushed ranges are already copied; the rest
+         * of the shadow is not the buffer's contents and must not overwrite them. */
+        if (!m->explicit_flush) memcpy(m->host, PTR(m->guest), m->size);
         gfree(m->guest);
         m->host = NULL;
     }

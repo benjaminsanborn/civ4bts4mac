@@ -1002,80 +1002,24 @@ SHIM(_CGEventPost) {
     }
 }
 
-/* ---- named pixmap cursors (32-bit, byte-swapped to big-endian ARGB by the game) ---- */
-static NSMutableDictionary<NSString *, NSCursor *> *g_cursors;
+/* ---- named pixmap cursors: the game's own pointer images are not used; the
+ * pointer stays the standard macOS arrow (hiding it still works). ---- */
+static NSMutableSet<NSString *> *g_cursors;
 SHIM(_QDRegisterNamedPixMapCursor) {
     /* (PixMapHandle crsr, PixMapHandle mask, Point hotSpot, const char *name) */
-    uint32_t pm = R32_(g_mem, ARG(0));
-    uint32_t base = R32_(g_mem, pm), rb = R16_(g_mem, pm + 4) & 0x3fff;
-    int16_t top = (int16_t)R16_(g_mem, pm + 6), left = (int16_t)R16_(g_mem, pm + 8);
-    int16_t bottom = (int16_t)R16_(g_mem, pm + 10), right = (int16_t)R16_(g_mem, pm + 12);
-    int w = right - left, h = bottom - top;
-    if (w <= 0 || h <= 0 || R16_(g_mem, pm + 32) != 32) { RET(-50); return; }
-    /* ARGB pixels; a separate 8-bit mask (0 transparent, 0xff opaque), when
-     * given, says which of them are part of the cursor. */
-    CFMutableDataRef data = CFDataCreateMutable(NULL, (CFIndex)rb * h);
-    CFDataAppendBytes(data, PTR(base), (CFIndex)rb * h);
-    uint32_t mpm = ARG(1) ? R32_(g_mem, ARG(1)) : 0;
-    if (mpm && R16_(g_mem, mpm + 32) == 8) {
-        const uint8_t *m = PTR(R32_(g_mem, mpm));
-        int mrb = R16_(g_mem, mpm + 4) & 0x3fff;
-        uint8_t *px = CFDataGetMutableBytePtr(data);
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++) {
-                uint8_t *a = &px[y * rb + x * 4];
-                *a = (uint8_t)(*a * m[y * mrb + x] / 255);
-            }
-    }
-    CGDataProviderRef dp = CGDataProviderCreateWithCFData(data);
-    static CGColorSpaceRef cs;
-    if (!cs) cs = CGColorSpaceCreateDeviceRGB();
-    CGImageRef img = CGImageCreate((size_t)w, (size_t)h, 8, 32, rb, cs,
-                                   kCGImageAlphaFirst | kCGBitmapByteOrder32Big, dp, NULL, false,
-                                   kCGRenderingIntentDefault);
-    NSImage *ni = [[NSImage alloc] initWithCGImage:img size:NSMakeSize(w, h)];
-    int16_t hv = (int16_t)(ARG(2) & 0xffff), hh = (int16_t)(ARG(2) >> 16);
-    NSCursor *c = [[NSCursor alloc] initWithImage:ni hotSpot:NSMakePoint(hh, hv)];
-    if (getenv("CIV4_DEBUG_CURSOR")) {
-        /* Opaque bounding box, to check the hotspot against the drawn pointer. */
-        int x0 = w, y0 = h, x1 = -1, y1 = -1;
-        const uint8_t *px = CFDataGetBytePtr(data);
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++)
-                if (px[y * rb + x * 4] > 0x40) {
-                    if (x < x0) x0 = x;
-                    if (y < y0) y0 = y;
-                    if (x > x1) x1 = x;
-                    if (y > y1) y1 = y;
-                }
-        rt_log("cursor %s: %dx%d hotspot h=%d v=%d opaque x %d-%d y %d-%d", CPTR(ARG(3)), w, h, hh, hv, x0, x1, y0, y1);
-        const char *dir = getenv("CIV4_DEBUG_CURSOR");
-        if (dir[0] == '/') { /* also save each cursor as PNG there */
-            char path[1024];
-            snprintf(path, sizeof path, "%s/cursor_%d.png", dir, (int)[g_cursors count]);
-            CFURLRef u = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
-            CGImageDestinationRef d = CGImageDestinationCreateWithURL(u, CFSTR("public.png"), 1, NULL);
-            if (d) { CGImageDestinationAddImage(d, img, NULL); CGImageDestinationFinalize(d); CFRelease(d); }
-            CFRelease(u);
-        }
-    }
-    CGImageRelease(img);
-    CGDataProviderRelease(dp);
-    CFRelease(data);
-    if (!g_cursors) g_cursors = [NSMutableDictionary new];
-    g_cursors[[NSString stringWithUTF8String:CPTR(ARG(3))]] = c;
+    if (!g_cursors) g_cursors = [NSMutableSet new];
+    [g_cursors addObject:[NSString stringWithUTF8String:CPTR(ARG(3))]];
     RET(noErr);
 }
-SHIM(_QDIsNamedPixMapCursorRegistered) { RET(g_cursors[[NSString stringWithUTF8String:CPTR(ARG(0))]] != nil); }
+SHIM(_QDIsNamedPixMapCursorRegistered) { RET([g_cursors containsObject:[NSString stringWithUTF8String:CPTR(ARG(0))]]); }
 SHIM(_QDSetNamedPixMapCursor) {
-    NSCursor *c = g_cursors[[NSString stringWithUTF8String:CPTR(ARG(0))]];
-    if (!c) { RET(-50); return; }
-    [c set];
+    if (![g_cursors containsObject:[NSString stringWithUTF8String:CPTR(ARG(0))]]) { RET(-50); return; }
+    [[NSCursor arrowCursor] set];
     RET(noErr);
 }
 /* (sic: Apple's API name is misspelled; the game imports both spellings) */
 SHIM(_QDUnregisterNamedPixMapCursur) {
-    [g_cursors removeObjectForKey:[NSString stringWithUTF8String:CPTR(ARG(0))]];
+    [g_cursors removeObject:[NSString stringWithUTF8String:CPTR(ARG(0))]];
     RET(noErr);
 }
 SHIM(_QDUnregisterNamedPixMapCursor) { sh_QDUnregisterNamedPixMapCursur(cpu); }
