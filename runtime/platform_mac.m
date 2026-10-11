@@ -219,6 +219,7 @@ static HWindow *event_window(NSEvent *ev) {
 
 static void post_mouse_at(HWindow *w, uint32_t kind, uint16_t button, NSPoint at, uint32_t mods, NSPoint delta,
                           uint32_t clicks) {
+    if (!w) return; /* before the game has a window: nothing could take it */
     HEvent *e = ev_create(kEventClassMouse, kind);
     add_mouse_params(e, at, mods, delta, w);
     if (button) {
@@ -254,6 +255,10 @@ static void post_key_raw(uint32_t kind, uint32_t code, uint32_t mods, NSString *
         else g_keymap[code >> 3] &= ~(1u << (code & 7));
     }
     if (kind == kEventRawKeyModifiersChanged) chars = @"";
+    /* Like mouse events, always name a window: the game's handlers don't check. */
+    HWindow *w = g_focus ? g_focus : display_window();
+    if (!w && [g_windows count]) w = [g_windows[0] pointerValue];
+    if (!w) return;
     HEvent *e = ev_create(kEventClassKeyboard, kind);
     ev_set_param(e, kEventParamKeyCode, typeUInt32, &code, 4);
     ev_set_param(e, kEventParamKeyModifiers, typeUInt32, &mods, 4);
@@ -268,10 +273,7 @@ static void post_key_raw(uint32_t kind, uint32_t code, uint32_t mods, NSString *
         [chars getCharacters:u range:NSMakeRange(0, n)];
         ev_set_param(e, kEventParamKeyUnicodes, typeUnicodeText, u, (uint32_t)(2 * n));
     }
-    /* Like mouse events, always name a window: the game's handlers don't check. */
-    HWindow *w = g_focus ? g_focus : display_window();
-    if (!w && [g_windows count]) w = [g_windows[0] pointerValue];
-    if (w) ev_set_param(e, kEventParamWindowRef, typeWindowRef, &w->g, 4);
+    ev_set_param(e, kEventParamWindowRef, typeWindowRef, &w->g, 4);
     ev_post(e);
     ev_release(e);
 }
@@ -469,6 +471,7 @@ static void translate(NSEvent *ev) {
     case NSEventTypeOtherMouseDragged: post_mouse(ev, kEventMouseDragged, 0); break;
     case NSEventTypeScrollWheel: {
         HWindow *w = event_window(ev);
+        if (!w) break;
         HEvent *e = ev_create(kEventClassMouse, kEventMouseWheelMoved);
         add_mouse_params(e, game_mouse(), carbon_modifiers([ev modifierFlags]), NSMakePoint([ev deltaX], [ev deltaY]), w);
         uint16_t axis = 1; /* kEventMouseWheelAxisY */
