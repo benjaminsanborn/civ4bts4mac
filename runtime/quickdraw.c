@@ -488,8 +488,16 @@ SHIM(_DrawText) {
              * cell would show up as specks beside the neighbouring glyph, and is
              * never shown as part of this one, so clip it to the cell. */
             double adv = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
+            /* Letters that dip just below the baseline (the tip of N, the
+             * bottoms of O, S, G: overshoot under a pixel) are cut off at it, as
+             * the hinted Windows font rendering the game was made for does.
+             * Otherwise that faint row turns into dark ticks under the text once
+             * the game adds its drop shadow. Real descenders reach further. */
+            CGRect ink = CTLineGetImageBounds(line, NULL); /* relative to the pen, y up */
+            int overshoot = ink.origin.y < 0 && ink.origin.y > -1;
             CGContextSaveGState(w->ctx);
-            CGContextClipToRect(w->ctx, CGRectMake(s->pen_h, w->top, lround(adv) + 1, w->h));
+            CGContextClipToRect(w->ctx, CGRectMake(s->pen_h, w->top, lround(adv) + 1,
+                                                   overshoot ? s->pen_v - w->top : w->h));
             CTLineDraw(line, w->ctx);
             CGContextRestoreGState(w->ctx);
         } else {
