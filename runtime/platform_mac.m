@@ -455,6 +455,20 @@ static int app_shortcut(NSEvent *ev) {
     return 0;
 }
 
+#define PINCH_STEP 0.1
+
+static void post_wheel(NSEvent *ev, int32_t delta) {
+    HWindow *w = event_window(ev);
+    if (!w || !delta) return;
+    HEvent *e = ev_create(kEventClassMouse, kEventMouseWheelMoved);
+    add_mouse_params(e, game_mouse(), carbon_modifiers([ev modifierFlags]), NSMakePoint(0, delta), w);
+    uint16_t axis = 1; /* kEventMouseWheelAxisY */
+    ev_set_param(e, kEventParamMouseWheelAxis, typeMouseWheelAxis, &axis, 2);
+    ev_set_param(e, kEventParamMouseWheelDelta, typeSInt32, &delta, 4);
+    ev_post(e);
+    ev_release(e);
+}
+
 static void translate(NSEvent *ev) {
     if (g_scripted) return;
     if (app_shortcut(ev)) return;
@@ -469,19 +483,18 @@ static void translate(NSEvent *ev) {
     case NSEventTypeLeftMouseDragged:
     case NSEventTypeRightMouseDragged:
     case NSEventTypeOtherMouseDragged: post_mouse(ev, kEventMouseDragged, 0); break;
-    case NSEventTypeScrollWheel: {
-        HWindow *w = event_window(ev);
-        if (!w) break;
-        HEvent *e = ev_create(kEventClassMouse, kEventMouseWheelMoved);
-        add_mouse_params(e, game_mouse(), carbon_modifiers([ev modifierFlags]), NSMakePoint([ev deltaX], [ev deltaY]), w);
-        uint16_t axis = 1; /* kEventMouseWheelAxisY */
-        int32_t delta = (int32_t)lround([ev scrollingDeltaY] * ([ev hasPreciseScrollingDeltas] ? 0.1 : 1.0));
-        if (delta) {
-            ev_set_param(e, kEventParamMouseWheelAxis, typeMouseWheelAxis, &axis, 2);
-            ev_set_param(e, kEventParamMouseWheelDelta, typeSInt32, &delta, 4);
-            ev_post(e);
-        }
-        ev_release(e);
+    case NSEventTypeScrollWheel:
+        post_wheel(ev, (int32_t)lround([ev scrollingDeltaY] * ([ev hasPreciseScrollingDeltas] ? 0.1 : 1.0)));
+        break;
+    case NSEventTypeMagnify: {
+        /* Trackpad pinch zooms like the scroll wheel (spreading = wheel up =
+         * zoom in), one wheel step per PINCH_STEP of magnification. */
+        static double pinch;
+        if ([ev phase] == NSEventPhaseBegan) pinch = 0;
+        pinch += [ev magnification];
+        int32_t steps = (int32_t)(pinch / PINCH_STEP);
+        pinch -= steps * PINCH_STEP;
+        post_wheel(ev, steps);
         break;
     }
     case NSEventTypeKeyDown: post_key(ev, [ev isARepeat] ? kEventRawKeyRepeat : kEventRawKeyDown); break;
