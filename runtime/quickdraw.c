@@ -295,9 +295,22 @@ SHIM(_QTNewGWorldFromPtr) {
     W32_(g_mem, ARG(0), w->g);
     RET(0);
 }
+#include <ImageIO/ImageIO.h>
 SHIM(_DisposeGWorld) {
     HGWorld *w = gw_of(ARG(0));
     if (!w) return;
+    const char *dump = getenv("CIV4_DEBUG_TEXT_DUMP"); /* dir: save glyph-row GWorlds as PNG */
+    if (dump && w->ctx && w->w > 500) {
+        static int n;
+        char path[1024];
+        snprintf(path, sizeof path, "%s/gworld_%03d_%dx%d.png", dump, n++, w->w, w->h);
+        CGImageRef img = CGBitmapContextCreateImage(w->ctx);
+        CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+        CGImageDestinationRef d = CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, NULL);
+        CGImageDestinationAddImage(d, img, NULL);
+        CGImageDestinationFinalize(d);
+        CFRelease(d); CFRelease(url); CGImageRelease(img);
+    }
     if (g_port == w->g) g_port = 0;
     if (w->ctx) CGContextRelease(w->ctx);
     if (w->own_pixels) gfree(w->pixels);
@@ -367,7 +380,12 @@ static void fill(const uint16_t c[3], CGRect r) {
     CGContextFillRect(w->ctx, r);
     CGColorRelease(col);
 }
-SHIM(_EraseRect) { fill(cur()->back, qd_rect(ARG(0))); }
+SHIM(_EraseRect) {
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("CIV4_DEBUG_TEXT") != NULL;
+    if (dbg) { CGRect r = qd_rect(ARG(0)); rt_log("EraseRect %.0f,%.0f %.0fx%.0f", r.origin.x, r.origin.y, r.size.width, r.size.height); }
+    fill(cur()->back, qd_rect(ARG(0)));
+}
 SHIM(_PaintRect) { fill(cur()->fore, qd_rect(ARG(0))); }
 SHIM(_FillRect) {
     /* Patterns are treated as solid: all-zero bits = white, otherwise the fore color. */
@@ -431,6 +449,7 @@ SHIM(_GetFontInfo) {
     int16_t fi[4] = {(int16_t)ceil(CTFontGetAscent(f)), (int16_t)ceil(CTFontGetDescent(f)),
                      (int16_t)ceil(CTFontGetBoundingBox(f).size.width), (int16_t)ceil(CTFontGetLeading(f))};
     memcpy(PTR(ARG(0)), fi, 8);
+    if (getenv("CIV4_DEBUG_TEXT")) rt_log("GetFontInfo font %d size %d face %d: ascent %d descent %d widMax %d leading %d", cur()->font, cur()->size, cur()->face, fi[0], fi[1], fi[2], fi[3]);
     CFRelease(f);
 }
 static double text_width(const uint8_t *text, uint32_t n) {
@@ -450,10 +469,32 @@ SHIM(_DrawText) {
     HGWorld *w = gw_of(g_port);
     CGColorRef col = rgb(s->fore);
     CTLineRef line = make_line(s, text, n, col);
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("CIV4_DEBUG_TEXT") != NULL;
+    if (dbg) {
+        CGRect ib = CTLineGetImageBounds(line, NULL); /* relative to the pen */
+        rt_log("DrawText '%.*s' pen %d,%d font %d size %d face %d gworld %dx%d@%d,%d adv %.2f ink x %.1f..%.1f y %.1f..%.1f",
+               (int)n, text, s->pen_h, s->pen_v, s->font, s->size, s->face, w ? w->w : 0, w ? w->h : 0,
+               w ? w->left : 0, w ? w->top : 0, CTLineGetTypographicBounds(line, NULL, NULL, NULL),
+               ib.origin.x, ib.origin.x + ib.size.width, ib.origin.y, ib.origin.y + ib.size.height);
+    }
     if (w && w->ctx) {
         CGContextSetShouldAntialias(w->ctx, s->size > 9);
         CGContextSetTextPosition(w->ctx, s->pen_h, s->pen_v);
-        CTLineDraw(line, w->ctx);
+        if (n == 1) {
+            /* The UI toolkit builds its glyph atlas by drawing each character
+             * alone, one cell (its CharWidth plus a pixel) after the other, and
+             * cutting the cells out again. Antialiased ink that overhangs the
+             * cell would show up as specks beside the neighbouring glyph, and is
+             * never shown as part of this one, so clip it to the cell. */
+            double adv = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
+            CGContextSaveGState(w->ctx);
+            CGContextClipToRect(w->ctx, CGRectMake(s->pen_h, w->top, lround(adv) + 1, w->h));
+            CTLineDraw(line, w->ctx);
+            CGContextRestoreGState(w->ctx);
+        } else {
+            CTLineDraw(line, w->ctx);
+        }
     }
     s->pen_h = (int16_t)(s->pen_h + lround(CTLineGetTypographicBounds(line, NULL, NULL, NULL)));
     CFRelease(line);

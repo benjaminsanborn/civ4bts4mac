@@ -27,5 +27,7 @@ uint32_t win_event_target(uint32_t window);
 uint32_t plat_mouse_buttons(void);
 void plat_mouse_global(int16_t *v, int16_t *h);
 void plat_display_mode(int *w, int *h); /* current virtual display mode (agl.m) */
+void plat_default_resolution(int *w, int *h); /* first-run resolution (agl.m) */
+int plat_fix_saved_height(int w, int h);      /* notch-free height for a full-screen size */
 
 #endif

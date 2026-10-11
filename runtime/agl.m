@@ -206,7 +206,16 @@ static void maybe_capture_frame(void) {
     static const char *dir;
     static int checked;
     static double last;
-    if (!checked) { checked = 1; dir = getenv("CIV4_FRAMES"); if (dir) mkdir(dir, 0755); }
+    if (!checked) {
+        checked = 1;
+        if ((dir = getenv("CIV4_FRAMES"))) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s", dir);
+            for (char *p = path + 1; *p; p++) /* mkdir -p */
+                if (*p == '/') { *p = 0; mkdir(path, 0755); *p = '/'; }
+            mkdir(path, 0755);
+        }
+    }
     if (!dir) return;
     double now = CACurrentMediaTime();
     if (now - last < 2.0) return;
@@ -687,6 +696,33 @@ static void ensure_modes(void) {
     }
     g_mode_w = sw;
     g_mode_h = sh;
+}
+
+/* Resolution for a first run (no saved GameDisplayWidth/Height): the main
+ * screen's size in points, minus the camera notch strip (the picture is kept
+ * below it), so each game pixel maps to whole screen pixels (2x2 on Retina)
+ * instead of being scaled by an odd factor, which blurs text. */
+void plat_default_resolution(int *w, int *h) {
+    NSScreen *screen = [NSScreen screens][0];
+    NSRect sf = [screen frame];
+    int notch = 0;
+    if (@available(macOS 12.0, *)) notch = (int)[screen safeAreaInsets].top;
+    *w = (int)sf.size.width;
+    *h = (int)sf.size.height - notch;
+}
+
+/* A saved mode of the full notched screen (points or pixels) can only be shown
+ * scaled down slightly, below the notch; use the notch-free height instead. */
+int plat_fix_saved_height(int w, int h) {
+    NSScreen *screen = [NSScreen screens][0];
+    NSRect sf = [screen frame];
+    double scale = [screen backingScaleFactor];
+    int notch = 0;
+    if (@available(macOS 12.0, *)) notch = (int)[screen safeAreaInsets].top;
+    int sw = (int)sf.size.width, sh = (int)sf.size.height;
+    if (notch && w == sw && h == sh) return sh - notch;
+    if (notch && w == (int)(sw * scale) && h == (int)(sh * scale)) return (int)((sh - notch) * scale);
+    return h;
 }
 
 static CFIndex mode_area(CFDictionaryRef d) { return (CFIndex)mode_int(d, CFSTR("Width")) * mode_int(d, CFSTR("Height")); }

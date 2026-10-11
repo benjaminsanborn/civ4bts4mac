@@ -47,11 +47,25 @@ static void unwrap(uint32_t g) {
     }
 }
 
+extern char **environ;
 void rt_stdio_init(void) {
     uint32_t a;
     if ((a = rt_hostdata("___stdinp"))) W32_(g_mem, a, wrap(stdin));
     if ((a = rt_hostdata("___stdoutp"))) W32_(g_mem, a, wrap(stdout));
     if ((a = rt_hostdata("___stderrp"))) W32_(g_mem, a, wrap(stderr));
+    /* Guest `environ` (Python's os.environ is built from it; BUG reads HOME).
+     * The game's crt1 defines its own copy, which its start code would fill;
+     * guest modules link against that one. Fill both. */
+    uint32_t game_environ = rt_lookup_symbol("_environ");
+    if ((a = rt_hostdata("_environ"))) {
+        uint32_t n = 0;
+        while (environ[n]) n++;
+        uint32_t arr = gmalloc(4 * (n + 1));
+        for (uint32_t i = 0; i < n; i++) W32_(g_mem, arr + 4 * i, gstrdup(environ[i]));
+        W32_(g_mem, arr + 4 * n, 0);
+        W32_(g_mem, a, arr);
+        if (game_environ) W32_(g_mem, game_environ, arr);
+    }
 }
 
 /* Guest paths are used as-is (relative to the working directory). */

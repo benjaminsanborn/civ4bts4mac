@@ -10,6 +10,7 @@
  * stayed alive (millions within minutes).
  */
 #include "cf.h"
+#include "platform.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -602,7 +603,35 @@ static CFStringRef prefs_app(CFStringRef app) {
     }
     return override && app && app != kCFPreferencesAnyApplication ? override : app;
 }
-SHIM(_CFPreferencesCopyAppValue) { RETCF_OWNED(CFPreferencesCopyAppValue(CFI(0), prefs_app(CFI(1)))); }
+/* First run: no saved display mode yet, so supply the screen's size (the
+ * game itself would pick 1024x768). Once the game saves its own, that wins. */
+static int default_display_value(CFStringRef key, int *out) {
+    int w, h;
+    if (!key) return 0;
+    if (CFEqual(key, CFSTR("GameDisplayWidth"))) { plat_default_resolution(&w, &h); *out = w; return 1; }
+    if (CFEqual(key, CFSTR("GameDisplayHeight"))) { plat_default_resolution(&w, &h); *out = h; return 1; }
+    return 0;
+}
+/* A saved height for the full notched screen becomes the notch-free height. */
+static CFIndex fix_display_height(CFStringRef key, CFStringRef app, CFIndex h) {
+    if (!key || !CFEqual(key, CFSTR("GameDisplayHeight"))) return h;
+    Boolean ok = 0;
+    CFIndex w = CFPreferencesGetAppIntegerValue(CFSTR("GameDisplayWidth"), app, &ok);
+    return ok ? plat_fix_saved_height((int)w, (int)h) : h;
+}
+SHIM(_CFPreferencesCopyAppValue) {
+    CFStringRef app = prefs_app(CFI(1));
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFI(0), app);
+    int d;
+    if (!v && default_display_value(CFI(0), &d)) v = CFNumberCreate(NULL, kCFNumberIntType, &d);
+    else if (v && CFGetTypeID(v) == CFNumberGetTypeID() && CFEqual(CFI(0), CFSTR("GameDisplayHeight"))) {
+        int h = 0;
+        CFNumberGetValue(v, kCFNumberIntType, &h);
+        int fixed = (int)fix_display_height(CFI(0), app, h);
+        if (fixed != h) { CFRelease(v); v = CFNumberCreate(NULL, kCFNumberIntType, &fixed); }
+    }
+    RETCF_OWNED(v);
+}
 SHIM(_CFPreferencesSetAppValue) { CFPreferencesSetAppValue(CFI(0), CFI(1), prefs_app(CFI(2))); }
 SHIM(_CFPreferencesAppSynchronize) { RET(CFPreferencesAppSynchronize(prefs_app(CFI(0)))); }
 SHIM(_CFPreferencesGetAppBooleanValue) {
@@ -614,6 +643,9 @@ SHIM(_CFPreferencesGetAppBooleanValue) {
 SHIM(_CFPreferencesGetAppIntegerValue) {
     Boolean valid = 0;
     CFIndex r = CFPreferencesGetAppIntegerValue(CFI(0), prefs_app(CFI(1)), &valid);
+    int d;
+    if (!valid && default_display_value(CFI(0), &d)) r = d, valid = 1;
+    else if (valid) r = fix_display_height(CFI(0), prefs_app(CFI(1)), r);
     if (ARG(2)) W8_(g_mem, ARG(2), valid);
     RET(r);
 }

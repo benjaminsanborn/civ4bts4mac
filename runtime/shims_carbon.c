@@ -167,6 +167,63 @@ SHIM(_PtrToHand) {
     RET(noErr);
 }
 SHIM(_ReleaseResource) {}
+
+/* GetIntlResource(id): the Script Manager's international formats, which the
+ * game's Win32 locale layer (GetLocaleInfoA, used by GetTimeFormatA for the
+ * in-game clock) reads. US English, laid out as Intl0Rec / Intl1Rec in
+ * IntlResources.h. Handles are allocated once and never released. */
+static uint32_t intl_handle(const void *data, uint32_t size) {
+    uint32_t d = gmalloc(size), h = gmalloc(4);
+    memcpy(PTR(d), data, size);
+    W32_(g_mem, h, d);
+    return h;
+}
+SHIM(_GetIntlResource) {
+    static uint32_t itl0, itl1;
+    if ((int16_t)ARG(0) == 0) {
+        if (!itl0) {
+            uint8_t r[32] = {0};
+            r[0] = '.'; r[1] = ','; r[2] = ';'; r[3] = '$'; /* decimal, thousands, list, currency */
+            r[6] = 0x80 | 0x40 | 0x20 | 0x10;                /* currFmt: leading/trailing zeros, neg sign, symbol first */
+            r[7] = 0;                                        /* dateOrder: mdy */
+            r[8] = 0x80;                                     /* shrtDateFmt: century */
+            r[9] = '/';                                      /* dateSep */
+            r[10] = 255;                                     /* timeCycle: 12-hour */
+            r[11] = 0x40 | 0x20;                             /* timeFmt: leading zero for minutes, seconds */
+            memcpy(r + 12, "AM", 2);                         /* mornStr[4] */
+            memcpy(r + 16, "PM", 2);                         /* eveStr[4] */
+            r[20] = ':';                                     /* timeSep */
+            r[29] = 0;                                       /* metricSys: no */
+            r[31] = 0;                                       /* intl0Vers: verUS (0) */
+            itl0 = intl_handle(r, sizeof r);
+        }
+        RET(itl0);
+    } else if ((int16_t)ARG(0) == 1) {
+        if (!itl1) {
+            static const char *days[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+            static const char *months[12] = {"January", "February", "March", "April", "May", "June", "July",
+                                             "August", "September", "October", "November", "December"};
+            uint8_t r[332] = {0};
+            for (int i = 0; i < 7; i++) { r[16 * i] = (uint8_t)strlen(days[i]); memcpy(r + 16 * i + 1, days[i], r[16 * i]); }
+            for (int i = 0; i < 12; i++) {
+                uint8_t *m = r + 112 + 16 * i;
+                m[0] = (uint8_t)strlen(months[i]);
+                memcpy(m + 1, months[i], m[0]);
+            }
+            r[304] = 0;      /* suppressDay */
+            r[305] = 0;      /* lngDateFmt */
+            r[306] = 0;      /* dayLeading0 */
+            r[307] = 3;      /* abbrLen */
+            memcpy(r + 312, ", ", 2); /* st1 */
+            memcpy(r + 316, " ", 1);  /* st2 */
+            memcpy(r + 320, ", ", 2); /* st3 */
+            itl1 = intl_handle(r, sizeof r);
+        }
+        RET(itl1);
+    } else {
+        RET(0);
+    }
+}
 SHIM(_SysBeep) { NSBeep_c(); }
 SHIM(_SetFrontProcess) { RET(noErr); }
 SHIM(_FMDeactivateFonts) { RET(noErr); }
@@ -197,6 +254,7 @@ SHIM(_Debugger) { rt_log("guest called Debugger()"); }
 const ShimDef shims_carbon[] = {
     SHIM_ENTRY(_GetNextProcess), SHIM_ENTRY(_CopyProcessName),
     SHIM_ENTRY(_HLock), SHIM_ENTRY(_HUnlock), SHIM_ENTRY(_PtrToHand), SHIM_ENTRY(_ReleaseResource),
+    SHIM_ENTRY(_GetIntlResource),
     SHIM_ENTRY(_SysBeep), SHIM_ENTRY(_SetFrontProcess), SHIM_ENTRY(_FMDeactivateFonts),
     SHIM_ENTRY(_GetScriptVariable), SHIM_ENTRY(_SectRect),
     SHIM_ENTRY(_MPAllocateTaskStorageIndex), SHIM_ENTRY(_MPDeallocateTaskStorageIndex),

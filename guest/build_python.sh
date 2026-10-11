@@ -24,6 +24,8 @@ done
 for f in "$SRC"/Objects/*.c; do cc1 "$f"; done
 for f in "$SRC"/Python/*.c; do
     case $(basename "$f") in dynload_*|mactoolboxglue.c|sigcheck.c|frozenmain.c|atof.c|dup2.c|getcwd.c|strdup.c|strtod.c) continue;; esac
+    # sys.platform: "darwin", as the Mac game's own Python reported (mods such as BUG check it).
+    case $(basename "$f") in getplatform.c) cc1 "$f" -DPLATFORM='"darwin"'; continue;; esac
     cc1 "$f"
 done
 for m in getbuildinfo gcmodule posixmodule signalmodule threadmodule errnomodule _sre _codecsmodule zipimport \

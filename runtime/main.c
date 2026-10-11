@@ -47,9 +47,25 @@ static char **g_sym_name;
 static size_t g_sym_n;
 
 /* Absolute path of a file in the build directory (the game chdirs away). */
-static char g_build_dir[PATH_MAX];
+/* Where things live. A development build keeps everything next to the
+ * executable (build/: gen/, pylib/, and the game/ and movies/ links). In the
+ * app bundle the data is in Contents/Resources, the game installation comes
+ * from CIV4_GAME (set by the launcher), and nothing is written to the bundle. */
+static char g_build_dir[PATH_MAX], g_res_dir[PATH_MAX];
+static int g_in_bundle;
 const char *rt_build_path(const char *rel, char *buf, size_t n) {
-    snprintf(buf, n, "%s/%s", g_build_dir, rel);
+    const char *env = NULL;
+    if (!strncmp(rel, "game", 4) && (rel[4] == 0 || rel[4] == '/')) env = getenv("CIV4_GAME");
+    else if (!strncmp(rel, "movies", 6) && (rel[6] == 0 || rel[6] == '/')) env = getenv("CIV4_MOVIES");
+    if (env) {
+        snprintf(buf, n, "%s%s", env, rel + (rel[0] == 'g' ? 4 : 6));
+    } else if (!strncmp(rel, "gen/", 4) || !strcmp(rel, "pylib")) {
+        snprintf(buf, n, "%s/%s", g_res_dir, rel);
+    } else if (g_in_bundle && getenv("HOME")) {
+        snprintf(buf, n, "%s/Library/Logs/Civ4 BtS Native/%s", getenv("HOME"), rel); /* hangs/ */
+    } else {
+        snprintf(buf, n, "%s/%s", g_build_dir, rel);
+    }
     return buf;
 }
 
@@ -427,6 +443,12 @@ int main(int argc, char **argv) {
         if (_NSGetExecutablePath(exe, &n) || !realpath(exe, real)) rt_fatal("cannot locate executable");
         *strrchr(real, '/') = 0;
         strlcpy(g_build_dir, real, sizeof g_build_dir);
+        strlcpy(g_res_dir, real, sizeof g_res_dir);
+        size_t len = strlen(real);
+        if (len > 15 && !strcmp(real + len - 15, "/Contents/MacOS")) {
+            g_in_bundle = 1;
+            snprintf(g_res_dir, sizeof g_res_dir, "%.*s/Resources", (int)(len - 6), real);
+        }
     }
     char pbuf[PATH_MAX];
     /* Debug output directories are relative to where we were started (the game chdirs). */
