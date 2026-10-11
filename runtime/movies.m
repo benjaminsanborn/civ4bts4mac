@@ -140,6 +140,26 @@ SHIM(_NewMovieFromDataRef) {
     uint32_t h = ARG(3);
     const char *path = h ? CPTR(R32_(g_mem, h)) : NULL;
     NSURL *url = path ? transcoded_url(path) : nil;
+    if (!url && path && !access(path, R_OK) && strlen(path) > 4 && !strcasecmp(path + strlen(path) - 4, ".mov")) {
+        /* A game movie with no transcoded copy (the app ships without them):
+         * a silent, zero-length stand-in that ends at once, so the game carries
+         * on as if it had played (it refuses to start if a movie won't open). */
+        HMovie *m = calloc(1, sizeof *m);
+        m->width = 640;
+        m->height = 480;
+        int16_t box[4] = {0, 0, 480, 640};
+        memcpy(m->box, box, sizeof box);
+        m->rate = 1;
+        m->volume = 0x100;
+        MOVIE_LOCK;
+        m->g = gh_new(TAG_MOVIE, m);
+        if (!g_movies) g_movies = [NSMutableArray new];
+        [g_movies addObject:[NSValue valueWithPointer:m]];
+        rt_log("movie skipped (not transcoded): %s", path);
+        W32_(g_mem, ARG(0), m->g);
+        RET(noErr);
+        return;
+    }
     if (!url) {
         rt_log("movie: can't resolve %s", path ? path : "(null)");
         RET(couldNotResolveDataRef);
@@ -206,7 +226,10 @@ SHIM(_SetMovieDrawingCompleteProc) { MOVIE_LOCK;
 }
 
 /* ---- playback ---- */
-static double movie_seconds(HMovie *m) { return CMTimeGetSeconds([m->player currentTime]); }
+static double movie_seconds(HMovie *m) {
+    if (!m->player) return m->duration; /* stand-in for a missing movie: always at its end */
+    return CMTimeGetSeconds([m->player currentTime]);
+}
 static void seek(HMovie *m, double t) {
     m->ended = 0;
     [m->player seekToTime:CMTimeMakeWithSeconds(t, TIMESCALE) toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];

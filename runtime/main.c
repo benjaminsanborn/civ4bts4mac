@@ -61,6 +61,8 @@ const char *rt_build_path(const char *rel, char *buf, size_t n) {
         snprintf(buf, n, "%s%s", env, rel + (rel[0] == 'g' ? 4 : 6));
     } else if (!strncmp(rel, "gen/", 4) || !strcmp(rel, "pylib")) {
         snprintf(buf, n, "%s/%s", g_res_dir, rel);
+    } else if (g_in_bundle && getenv("HOME") && !strncmp(rel, "movies", 6)) {
+        snprintf(buf, n, "%s/Library/Application Support/Civ4 BtS Native/%s", getenv("HOME"), rel);
     } else if (g_in_bundle && getenv("HOME")) {
         snprintf(buf, n, "%s/Library/Logs/Civ4 BtS Native/%s", getenv("HOME"), rel); /* hangs/ */
     } else {

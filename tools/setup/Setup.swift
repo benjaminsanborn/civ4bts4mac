@@ -21,14 +21,17 @@ let appSubpath = "Beyond the Sword/Civilization IV Beyond the Sword.app"
 let exeSubpath = appSubpath + "/Contents/MacOS/Civilization IV Beyond the Sword"
 // The game's user folder (where BUG Mod goes); setup.sh passes it as --docs.
 var docsDir: URL {
-    URL(fileURLWithPath: argument("--docs") ?? (NSHomeDirectory() + "/Documents/Civilization IV Beyond the Sword"))
+    URL(fileURLWithPath: argument("--docs") ?? (home + "/Documents/Civilization IV Beyond the Sword"))
 }
+
+/// The home folder, as the game sees it ($HOME, like the game runtime).
+let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
 
 /// Running as the app (not from tools/setup.sh).
 let appMode = argument("--out") == nil
-let supportDir = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Civ4 BtS Native")
-let logDir = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Logs/Civ4 BtS Native")
-let cacheDir = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Caches/Civ4 BtS Native")
+let supportDir = URL(fileURLWithPath: home + "/Library/Application Support/Civ4 BtS Native")
+let logDir = URL(fileURLWithPath: home + "/Library/Logs/Civ4 BtS Native")
+let cacheDir = URL(fileURLWithPath: home + "/Library/Caches/Civ4 BtS Native")
 let configURL = supportDir.appendingPathComponent("config.json")
 
 struct Config: Codable { var game: String; var bug: String }
@@ -103,7 +106,7 @@ func validate(_ root: String) -> [Check] {
 /// Steam libraries (libraryfolders.vdf) and /Applications, for folders that look like Civ IV.
 func detectInstalls(current: String?) -> [Install] {
     let fm = FileManager.default
-    let home = fm.homeDirectoryForCurrentUser.path
+    let home = NSHomeDirectory() /* Steam lives in the real home */
     var libraries = [home + "/Library/Application Support/Steam"]
     if let vdf = try? String(contentsOfFile: home + "/Library/Application Support/Steam/steamapps/libraryfolders.vdf",
                              encoding: .utf8) {
@@ -220,7 +223,12 @@ struct SetupView: View {
                 Text("Civilization IV: Beyond the Sword").font(.title.bold())
                 Text("Native Apple Silicon build — setup").font(.title3).foregroundStyle(.secondary)
             }
-            Text("""
+            Text(appMode ? """
+                This app is a recompiled version of the game’s Mac program. It has no game data of its own: \
+                it reads everything from your installed copy of **Aspyr’s Mac port of Beyond the Sword, \
+                version \(supportedVersion)** (the version sold on Steam). It must be exactly this build of the game; \
+                other versions and the Windows release won’t work. The game files are only read, never changed.
+                """ : """
                 This build recompiles the game from your own copy, so it needs that copy installed: \
                 **Aspyr’s Mac port of Beyond the Sword, version \(supportedVersion)** (the version sold on Steam). \
                 It must be exactly this build of the game; other versions and the Windows release won’t work. \

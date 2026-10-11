@@ -608,9 +608,17 @@ static CFStringRef prefs_app(CFStringRef app) {
 static int default_display_value(CFStringRef key, int *out) {
     int w, h;
     if (!key) return 0;
-    if (CFEqual(key, CFSTR("GameDisplayWidth"))) { plat_default_resolution(&w, &h); *out = w; return 1; }
-    if (CFEqual(key, CFSTR("GameDisplayHeight"))) { plat_default_resolution(&w, &h); *out = h; return 1; }
-    return 0;
+    if (CFEqual(key, CFSTR("GameDisplayWidth"))) plat_default_resolution(&w, &h), *out = w;
+    else if (CFEqual(key, CFSTR("GameDisplayHeight"))) plat_default_resolution(&w, &h), *out = h;
+    else return 0;
+    return *out > 0;
+}
+/* The stored value, or 0 if absent; a stored 0 also means "not chosen". */
+static int is_unset_display_value(CFStringRef key, CFPropertyListRef v) {
+    if (!key || !(CFEqual(key, CFSTR("GameDisplayWidth")) || CFEqual(key, CFSTR("GameDisplayHeight")))) return 0;
+    int x = 0;
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue(v, kCFNumberIntType, &x);
+    return x <= 0;
 }
 /* A saved height for the full notched screen becomes the notch-free height. */
 static CFIndex fix_display_height(CFStringRef key, CFStringRef app, CFIndex h) {
@@ -623,7 +631,10 @@ SHIM(_CFPreferencesCopyAppValue) {
     CFStringRef app = prefs_app(CFI(1));
     CFPropertyListRef v = CFPreferencesCopyAppValue(CFI(0), app);
     int d;
-    if (!v && default_display_value(CFI(0), &d)) v = CFNumberCreate(NULL, kCFNumberIntType, &d);
+    if (is_unset_display_value(CFI(0), v) && default_display_value(CFI(0), &d)) {
+        if (v) CFRelease(v);
+        v = CFNumberCreate(NULL, kCFNumberIntType, &d);
+    }
     else if (v && CFGetTypeID(v) == CFNumberGetTypeID() && CFEqual(CFI(0), CFSTR("GameDisplayHeight"))) {
         int h = 0;
         CFNumberGetValue(v, kCFNumberIntType, &h);
@@ -644,7 +655,7 @@ SHIM(_CFPreferencesGetAppIntegerValue) {
     Boolean valid = 0;
     CFIndex r = CFPreferencesGetAppIntegerValue(CFI(0), prefs_app(CFI(1)), &valid);
     int d;
-    if (!valid && default_display_value(CFI(0), &d)) r = d, valid = 1;
+    if ((!valid || r <= 0) && is_unset_display_value(CFI(0), NULL) && default_display_value(CFI(0), &d)) r = d, valid = 1;
     else if (valid) r = fix_display_height(CFI(0), prefs_app(CFI(1)), r);
     if (ARG(2)) W8_(g_mem, ARG(2), valid);
     RET(r);

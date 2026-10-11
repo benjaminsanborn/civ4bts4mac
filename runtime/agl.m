@@ -702,8 +702,14 @@ static void ensure_modes(void) {
  * screen's size in points, minus the camera notch strip (the picture is kept
  * below it), so each game pixel maps to whole screen pixels (2x2 on Retina)
  * instead of being scaled by an odd factor, which blurs text. */
+static NSScreen *main_screen(void) {
+    [NSApplication sharedApplication]; /* the window server connection: NSScreen is empty before it */
+    NSArray *screens = [NSScreen screens];
+    return screens.count ? screens[0] : nil;
+}
 void plat_default_resolution(int *w, int *h) {
-    NSScreen *screen = [NSScreen screens][0];
+    NSScreen *screen = main_screen();
+    if (!screen) { *w = *h = 0; return; }
     NSRect sf = [screen frame];
     int notch = 0;
     if (@available(macOS 12.0, *)) notch = (int)[screen safeAreaInsets].top;
@@ -714,7 +720,8 @@ void plat_default_resolution(int *w, int *h) {
 /* A saved mode of the full notched screen (points or pixels) can only be shown
  * scaled down slightly, below the notch; use the notch-free height instead. */
 int plat_fix_saved_height(int w, int h) {
-    NSScreen *screen = [NSScreen screens][0];
+    NSScreen *screen = main_screen();
+    if (!screen) return h;
     NSRect sf = [screen frame];
     double scale = [screen backingScaleFactor];
     int notch = 0;
