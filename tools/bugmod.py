@@ -6,7 +6,7 @@
   bugmod.py status    --docs DIR
 
 DIR is the game's user folder, normally
-~/Documents/Civilization IV Beyond the Sword. Everything goes there; the game
+~/Library/Application Support/Civ4 BtS Native/Civilization IV Beyond the Sword. Everything goes there; the game
 install itself is never modified:
   customassets  Assets -> CustomAssets (always active, also in other people's
                 saves); Info, UserSettings, GameSetUpCheck -> "BUG Mod"
@@ -171,7 +171,7 @@ def status(docs: str):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["install", "uninstall", "status"])
-    ap.add_argument("--docs", default=os.path.expanduser("~/Documents/Civilization IV Beyond the Sword"))
+    ap.add_argument("--docs", default=os.path.expanduser("~/Library/Application Support/Civ4 BtS Native/Civilization IV Beyond the Sword"))
     ap.add_argument("--mode", choices=["customassets", "mod"], default="customassets")
     a = ap.parse_args()
     {"install": lambda: install(a.docs, a.mode), "uninstall": lambda: uninstall(a.docs),

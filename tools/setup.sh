@@ -6,13 +6,19 @@
 # or, without a window (scripts, CI):
 #   tools/setup.sh --game DIR [--bug none|customassets|mod]
 # Writes build/setup.json, points build/game at the installation, and installs,
-# switches or removes BUG Mod in ~/Documents/Civilization IV Beyond the Sword.
+# switches or removes BUG Mod in the game's user folder (DOCS below).
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 SHA256=fec6efc11f8e6065c3e0bd0e5b06d58335fa6c0ce842e505c3cd470bb36143ae
 EXE="Beyond the Sword/Civilization IV Beyond the Sword.app/Contents/MacOS/Civilization IV Beyond the Sword"
-DOCS="$HOME/Documents/Civilization IV Beyond the Sword"
+# The game's user folder; the runtime keeps it here rather than in Documents,
+# and moves one found in ~/Documents over once (as the setup app does).
+DOCS="$HOME/Library/Application Support/Civ4 BtS Native/Civilization IV Beyond the Sword"
+if [ ! -e "$DOCS" ] && [ -d "$HOME/Documents/Civilization IV Beyond the Sword" ]; then
+    mkdir -p "$(dirname "$DOCS")"
+    mv "$HOME/Documents/Civilization IV Beyond the Sword" "$DOCS"
+fi
 mkdir -p build/setup
 
 GAME= BUG=

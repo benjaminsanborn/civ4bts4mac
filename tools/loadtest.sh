@@ -5,7 +5,7 @@
 #   run.log      the harness log (fps, memory, hitches)
 #   sample_*.txt process samples every $SAMPLE_EVERY seconds
 # Autosaves (every 25 turns, set in the sandbox CivilizationIV.ini) land in
-# build/home/Documents/Civilization IV Beyond the Sword/Saves/single/auto.
+# build/home/Library/Application Support/Civ4 BtS Native/Civilization IV Beyond the Sword/Saves/single/auto.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 HOURS=${HOURS:-8}

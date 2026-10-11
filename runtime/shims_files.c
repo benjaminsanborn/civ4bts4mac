@@ -118,6 +118,32 @@ SHIM(_fopen) {
 #define kLocalDomain (-32765)
 #define kUserDomain (-32763)
 
+/* The game keeps its user folder ("Civilization IV Beyond the Sword": saves,
+ * CustomAssets, mods, logs) in Documents. That folder is privacy-protected,
+ * so macOS asks for access, and asks again whenever the executable changes.
+ * Its "Documents" is here instead; a folder already in ~/Documents is moved
+ * over the first time (the one access request). The setup app does the same. */
+#define USER_FOLDER "Civilization IV Beyond the Sword"
+static void docs_path(const char *home, char *buf, size_t n) {
+    snprintf(buf, n, "%s/Library/Application Support/Civ4 BtS Native", home);
+    static int checked;
+    if (checked) return;
+    checked = 1;
+    for (char *s = buf + strlen(home) + 1; (s = strchr(s, '/')); *s++ = '/') {
+        *s = 0;
+        mkdir(buf, 0755);
+    }
+    mkdir(buf, 0755);
+    char now[1024], old[1024];
+    struct stat st;
+    snprintf(now, sizeof now, "%s/" USER_FOLDER, buf);
+    if (lstat(now, &st) == 0) return;
+    snprintf(old, sizeof old, "%s/Documents/" USER_FOLDER, home);
+    if (lstat(old, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+    if (rename(old, now) == 0) rt_log("moved %s to %s", old, now);
+    else rt_log("could not move %s: %s", old, strerror(errno));
+}
+
 static const char *folder_path(int16_t domain, uint32_t type, char *buf, size_t n) {
     const char *home = getenv("HOME");
     /* kOnAppropriateDisk (-32767) and 0 mean "wherever it lives": the system for
@@ -129,7 +155,7 @@ static const char *folder_path(int16_t domain, uint32_t type, char *buf, size_t 
     case 'pref': snprintf(buf, n, "%s/Library/Preferences", root); break;
     case 'asup': snprintf(buf, n, "%s/Library/Application Support", root); break;
     case 'cach': snprintf(buf, n, "%s/Library/Caches", root); break;
-    case 'docs': snprintf(buf, n, "%s/Documents", home); break;
+    case 'docs': docs_path(home, buf, n); break;
     case 'desk': snprintf(buf, n, "%s/Desktop", home); break;
     case 'temp': case 'tmp ': snprintf(buf, n, "%s", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp"); break;
     case 'cusr': snprintf(buf, n, "%s", home); break;

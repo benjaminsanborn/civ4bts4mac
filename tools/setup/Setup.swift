@@ -19,9 +19,23 @@ let supportedVersion = "3.19"
 let supportedSHA256 = "fec6efc11f8e6065c3e0bd0e5b06d58335fa6c0ce842e505c3cd470bb36143ae"
 let appSubpath = "Beyond the Sword/Civilization IV Beyond the Sword.app"
 let exeSubpath = appSubpath + "/Contents/MacOS/Civilization IV Beyond the Sword"
-// The game's user folder (where BUG Mod goes); setup.sh passes it as --docs.
+// The game's user folder (saves, and where BUG Mod goes); setup.sh passes it as
+// --docs. The runtime keeps it in Application Support rather than Documents,
+// which macOS guards with an access prompt.
 var docsDir: URL {
-    URL(fileURLWithPath: argument("--docs") ?? (home + "/Documents/Civilization IV Beyond the Sword"))
+    URL(fileURLWithPath: argument("--docs") ?? (supportDir.path + "/Civilization IV Beyond the Sword"))
+}
+
+/// Moves a user folder left in ~/Documents by earlier versions (or by Aspyr's
+/// game) to docsDir, once: the runtime does the same if the game starts first.
+func migrateUserFolder() {
+    let fm = FileManager.default
+    let old = home + "/Documents/Civilization IV Beyond the Sword"
+    var isDir: ObjCBool = false
+    guard (try? docsDir.checkResourceIsReachable()) != true,
+          fm.fileExists(atPath: old, isDirectory: &isDir), isDir.boolValue else { return }
+    try? fm.createDirectory(at: docsDir.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? fm.moveItem(atPath: old, toPath: docsDir.path)
 }
 
 /// The home folder, as the game sees it ($HOME, like the game runtime).
@@ -269,7 +283,7 @@ struct SetupView: View {
                     Text("""
                         The BTS Unaltered Gameplay mod: a much richer interface (scoreboard, city and unit details, \
                         advisors, a clock, reminders) with the rules left exactly as they are. Downloaded from \
-                        SourceForge (2.8 MB) and installed in your Documents folder, not in the game; \
+                        SourceForge (2.8 MB) and installed with your saves, not in the game; \
                         turning this off later removes it (keeping its settings) and restores anything it replaced.
                         """)
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -310,6 +324,7 @@ struct SetupView: View {
 @main
 enum Main {
     static func main() {
+        if appMode { migrateUserFolder() }
         // App: go straight to the game when the saved installation still checks
         // out, unless Option is held to change the setup.
         if appMode, let c = loadConfig(), !NSEvent.modifierFlags.contains(.option),

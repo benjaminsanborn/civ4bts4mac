@@ -10,7 +10,7 @@ SAVE=$1
 TURNS=${2:-10}
 [ -f "$SAVE" ] || { echo "usage: $0 SAVE [TURNS]"; exit 1; }
 NAME=$(basename "$SAVE" .CivBeyondSwordSave)
-cp "$SAVE" "build/home/Documents/Civilization IV Beyond the Sword/Saves/single/"
+cp "$SAVE" "build/home/Library/Application Support/Civ4 BtS Native/Civilization IV Beyond the Sword/Saves/single/"
 OUT=build/bench
 mkdir -p "$OUT"
 TL="$ROOT/$OUT/turns_$NAME.log"

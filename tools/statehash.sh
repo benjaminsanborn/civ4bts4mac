@@ -7,7 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 SAVE=$1; TARGET=$2; TAG=${3:-x}; TURNS=3
 NAME=$(basename "$SAVE" .CivBeyondSwordSave)
-cp "$SAVE" "build/home/Documents/Civilization IV Beyond the Sword/Saves/single/"
+cp "$SAVE" "build/home/Library/Application Support/Civ4 BtS Native/Civilization IV Beyond the Sword/Saves/single/"
 mkdir -p build/bench
 OUTF="$ROOT/build/bench/state_${NAME}_$TAG.txt"
 rm -f "$OUTF" build/bench/statehash.cfg.err

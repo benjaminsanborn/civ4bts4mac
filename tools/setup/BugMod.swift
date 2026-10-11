@@ -1,6 +1,6 @@
 // BUG Mod 4.4 install/uninstall for the app (testers may not have Python).
 // Same behaviour and manifest format as tools/bugmod.py: everything goes into
-// the game's user folder (~/Documents/Civilization IV Beyond the Sword), files
+// the game's user folder (docsDir, in Application Support), files
 // that get overwritten are backed up, and uninstall restores the folder.
 import CryptoKit
 import Foundation
