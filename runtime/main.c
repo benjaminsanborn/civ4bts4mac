@@ -437,7 +437,10 @@ void rt_libc_init(CPU *cpu, int argc, char **argv);
 void rt_cf_init(void);
 void rt_cg_image_init(void);
 
+int plat_report_bug_main(int argc, char **argv);
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--report-bug")) return plat_report_bug_main(argc, argv);
     const char *world = getenv("CIV4_WORLD");
     /* Everything we load lives next to this executable (build/). */
     {

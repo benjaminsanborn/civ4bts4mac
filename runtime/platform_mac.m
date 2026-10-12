@@ -416,6 +416,8 @@ static void script_step(ScriptStep *st) {
         strlcpy(g_pending_python, st->arg, sizeof g_pending_python);
     } else if (!strcmp(st->cmd, "command") && strlen(st->arg) == 4) {
         post_command(FOURCC(st->arg[0], st->arg[1], st->arg[2], st->arg[3]));
+    } else if (!strcmp(st->cmd, "report")) {
+        plat_report_bug();
     } else if (!strcmp(st->cmd, "quit")) {
         rt_log("input script: quit");
         exit(0);
@@ -458,6 +460,10 @@ static int app_shortcut(NSEvent *ev) {
     }
     if ([k isEqualToString:@"h"]) {
         [NSApp hide:nil];
+        return 1;
+    }
+    if ([ev keyCode] == 11 /* B */ && ([ev modifierFlags] & NSEventModifierFlagOption)) {
+        plat_report_bug(); /* bug_report.m */
         return 1;
     }
     return 0;

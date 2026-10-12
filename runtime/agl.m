@@ -285,7 +285,15 @@ SHIM(_aglUpdateContext) {
 /* CIV4_FRAMES=dir: save the game's back buffer as PNG every couple of seconds
  * (inspection without screen capture). */
 #import <ImageIO/ImageIO.h>
+static void save_back_buffer(const char *path);
+static char g_screenshot[1024]; /* bug report: save the next frame here */
+void agl_request_screenshot(const char *path) { strlcpy(g_screenshot, path, sizeof g_screenshot); }
+
 static void maybe_capture_frame(void) {
+    if (g_screenshot[0]) {
+        save_back_buffer(g_screenshot);
+        g_screenshot[0] = 0;
+    }
     static const char *dir;
     static int checked;
     static double last;
@@ -303,6 +311,13 @@ static void maybe_capture_frame(void) {
     double now = CACurrentMediaTime();
     if (now - last < 2.0) return;
     last = now;
+    char path[1024];
+    snprintf(path, sizeof path, "%s/frame_%06.1f.png", dir, now);
+    save_back_buffer(path);
+}
+
+/* The back buffer (the frame about to be shown) as a PNG. */
+static void save_back_buffer(const char *path) {
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
     GLint w = 0, h = 0;
@@ -330,8 +345,6 @@ static void maybe_capture_frame(void) {
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGContextRef bc = CGBitmapContextCreate(px, (size_t)w, (size_t)h, 8, (size_t)w * 4, cs, kCGImageAlphaNoneSkipLast);
     CGImageRef img = CGBitmapContextCreateImage(bc);
-    char path[1024];
-    snprintf(path, sizeof path, "%s/frame_%06.1f.png", dir, now);
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
     CGImageDestinationRef dst = url && img ? CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, NULL) : NULL;
     if (dst) {

@@ -65,12 +65,54 @@ func launchGame(_ game: String) -> Never {
     setenv("CIV4_LENIENT", "1", 1)            /* log unimplemented calls instead of stopping */
     setenv("PYTHONDONTWRITEBYTECODE", "1", 1) /* never write into the signed bundle */
     let log = logDir.appendingPathComponent("game.log").path
-    let fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+    let fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0o644) /* the last one is game-previous.log */
     if fd >= 0 { dup2(fd, 1); dup2(fd, 2); close(fd) }
     let argv: [UnsafeMutablePointer<CChar>?] = [strdup(exe), nil]
     execv(exe, argv)
     fputs("cannot start \(exe): \(String(cString: strerror(errno)))\n", stderr)
     exit(1)
+}
+
+let previousLog = logDir.appendingPathComponent("game-previous.log")
+
+/// Keeps the last game's log as game-previous.log; whether that game quit
+/// unexpectedly (a clean exit ends the log with "main returned").
+func rotateLog() -> Bool {
+    let fm = FileManager.default
+    let log = logDir.appendingPathComponent("game.log")
+    guard fm.fileExists(atPath: log.path) else { return false }
+    try? fm.removeItem(at: previousLog)
+    try? fm.moveItem(at: log, to: previousLog)
+    guard let text = try? String(contentsOf: previousLog, encoding: .isoLatin1), !text.isEmpty else { return false }
+    return !text.contains("main returned")
+}
+
+/// Opens a GitHub issue filled in with this Mac's details and the end of the
+/// last game's log (the game program does it: civ4 --report-bug).
+func reportBug(crash: Bool) {
+    let exe = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("civ4").path
+    var args = ["--report-bug", "--log", previousLog.path]
+    if crash { args.append("--crash") }
+    _ = run(exe, args)
+}
+
+/// After a game that quit unexpectedly: offer to report it. False to stop here.
+func offerCrashReport() -> Bool {
+    NSApplication.shared.setActivationPolicy(.regular)
+    NSApp.activate(ignoringOtherApps: true)
+    let alert = NSAlert()
+    alert.messageText = "Civilization IV quit unexpectedly last time"
+    alert.informativeText = """
+        You can report it on GitHub: the report opens in your browser, filled in with your Mac's \
+        details and the end of the game's log, for you to describe what happened. A GitHub account is needed.
+        """
+    alert.addButton(withTitle: "Play")
+    alert.addButton(withTitle: "Report Problem…")
+    if alert.runModal() == .alertSecondButtonReturn {
+        reportBug(crash: true)
+        return false
+    }
+    return true
 }
 
 func argument(_ name: String) -> String? {
@@ -308,7 +350,7 @@ struct SetupView: View {
                 """)
                 .fixedSize(horizontal: false, vertical: true)
             if appMode {
-                Text("This window appears on first launch; hold ⌥ Option while opening the app to come back to it. Movies (the intro, wonder and era movies) don’t play in this test version.")
+                Text("This window appears on first launch; hold ⌥ Option while opening the app to come back to it. To report a problem from the game, press ⌘⌥B.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -387,6 +429,10 @@ struct SetupView: View {
                     Text(e).foregroundStyle(.red).font(.callout)
                 }
                 Spacer()
+                if appMode {
+                    Button("Report a Bug…") { reportBug(crash: false) }
+                        .help("Opens a GitHub issue filled in with your Mac's details and the end of the last game's log")
+                }
                 Button(appMode ? "Quit" : "Cancel") { exit(1) }.keyboardShortcut(.cancelAction)
                 Button(appMode ? "Play" : "Continue") { model.finish() }
                     .keyboardShortcut(.defaultAction)
@@ -401,7 +447,10 @@ struct SetupView: View {
 @main
 enum Main {
     static func main() {
-        if appMode { migrateUserFolder() }
+        if appMode {
+            migrateUserFolder()
+            if rotateLog() && !offerCrashReport() { exit(0) }
+        }
         // App: go straight to the game when the saved installation still checks
         // out, unless Option is held to change the setup.
         if appMode, let c = loadConfig(), !NSEvent.modifierFlags.contains(.option),
