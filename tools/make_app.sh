@@ -13,7 +13,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-VERSION=0.1.0
+VERSION=0.2.0
 NAME="Civ4 BtS Native"
 BUNDLE_ID=com.benjaminsanborn.civ4btsnative
 NOTARY_KEY=${NOTARY_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_7J89CUHS7F.p8}
@@ -48,6 +48,20 @@ strip -S "$APP/Contents/MacOS/civ4" 2>/dev/null || true
 cp build/gen/world.img build/gen/exports.txt build/gen/symbols.txt "$APP/Contents/Resources/gen/"
 rsync -a --exclude '*.pyc' build/pylib "$APP/Contents/Resources/"
 
+echo "== icon"
+# The game's own icon (Aspyr's app), which it only has at 48x48: scaled up for the larger sizes.
+ICONSET="$OUT/AppIcon.iconset"
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+sips -s format png "build/game/Beyond the Sword/Civilization IV Beyond the Sword.app/Contents/Resources/AppIcon.icns" \
+    --out "$OUT/icon48.png" >/dev/null
+for size in 16 32 128 256 512; do
+    sips -z $size $size "$OUT/icon48.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+    sips -z $((size * 2)) $((size * 2)) "$OUT/icon48.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONSET" "$OUT/icon48.png"
+
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -58,6 +72,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleName</key><string>$NAME</string>
     <key>CFBundleDisplayName</key><string>$NAME</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>

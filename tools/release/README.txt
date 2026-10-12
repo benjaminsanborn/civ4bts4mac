@@ -1,4 +1,4 @@
-Civ4 BtS Native 0.1.0 (test release)
+Civ4 BtS Native 0.2.0 (test release)
 =====================================
 
 Civilization IV: Beyond the Sword, running natively on Apple Silicon Macs.
@@ -35,29 +35,47 @@ Installing
 3. After that the game starts directly. To get back to the setup window
    (for example to add or remove BUG Mod), hold the Option key while opening
    the app.
+4. The first time you play, the original game's movies (wonders, eras,
+   victories) are converted in the background, which takes a minute or two;
+   until then those movies are skipped. The Beyond the Sword movies play
+   straight away.
+
+
+Screen and interface size
+-------------------------
+The game always draws at your screen's full resolution. The resolution you
+pick in Options > Graphics sets the size of the interface: a smaller
+resolution gives bigger buttons and text, with the map and text just as
+sharp. The default matches macOS's own scaling (on a Retina screen, half the
+screen's pixel size).
 
 
 Where things are
 ----------------
-- Saves, settings, BUG Mod: ~/Documents/Civilization IV Beyond the Sword
-- Log file (please send it with any problem report):
-  ~/Library/Logs/Civ4 BtS Native/game.log
+- Saves, settings, BUG Mod:
+  ~/Library/Application Support/Civ4 BtS Native/Civilization IV Beyond the Sword
+  (a folder left in ~/Documents by version 0.1.0 is moved there)
+- Log files: ~/Library/Logs/Civ4 BtS Native (game.log, and game-previous.log
+  from the time before)
+- Converted movies: ~/Library/Application Support/Civ4 BtS Native/movies
 - Your choices from the setup window:
   ~/Library/Application Support/Civ4 BtS Native/config.json
 
 
 Known limitations in this version
 ---------------------------------
-- Movies (the intro, wonder and era movies) don't play.
 - Multiplayer hasn't been tested.
 - Late-game AI turns on Huge maps with many civilizations can take 30-40
   seconds; the window stays responsive meanwhile.
-- The screen resolution defaults to your display's; it can be changed in
-  Options > Graphics.
 
 
 Reporting problems
 ------------------
-Please include what you were doing, your Mac model and macOS version, and the
-log file above (it's overwritten each time the game starts, so copy it before
-relaunching).
+In the game, press Command-Option-B. It saves a screenshot, shows it and the
+log file in Finder, and opens a new issue on GitHub (a free GitHub account is
+needed) already filled in with your Mac's details and the end of the log:
+describe what happened and drag in the screenshot and log. If the game quits
+unexpectedly, the app offers the same the next time it opens, and the setup
+window has a "Report a Bug…" button.
+
+Issues: https://github.com/benjaminsanborn/civ4bts4mac/issues
