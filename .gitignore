@@ -5,3 +5,4 @@ __pycache__/
 third_party/Python-2.6.9/
 third_party/gcc421/
 third_party/libstdcxx/
+third_party/ffmpeg-*/

@@ -43,7 +43,7 @@ func migrateUserFolder() {
 let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
 
 /// Running as the app (not from tools/setup.sh).
-let appMode = argument("--out") == nil
+let appMode = argument("--out") == nil && argument("--convert-movies") == nil
 let supportDir = URL(fileURLWithPath: home + "/Library/Application Support/Civ4 BtS Native")
 let logDir = URL(fileURLWithPath: home + "/Library/Logs/Civ4 BtS Native")
 let cacheDir = URL(fileURLWithPath: home + "/Library/Caches/Civ4 BtS Native")
@@ -67,6 +67,7 @@ func launchGame(_ game: String) -> Never {
     let log = logDir.appendingPathComponent("game.log").path
     let fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0o644) /* the last one is game-previous.log */
     if fd >= 0 { dup2(fd, 1); dup2(fd, 2); close(fd) }
+    Movies.convertInBackground(game: game)
     let argv: [UnsafeMutablePointer<CChar>?] = [strdup(exe), nil]
     execv(exe, argv)
     fputs("cannot start \(exe): \(String(cString: strerror(errno)))\n", stderr)
@@ -350,7 +351,7 @@ struct SetupView: View {
                 """)
                 .fixedSize(horizontal: false, vertical: true)
             if appMode {
-                Text("This window appears on first launch; hold ⌥ Option while opening the app to come back to it. To report a problem from the game, press ⌘⌥B.")
+                Text("This window appears on first launch; hold ⌥ Option while opening the app to come back to it. The original game’s movies are converted in the background the first time you play (a minute or two). To report a problem from the game, press ⌘⌥B.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -447,6 +448,7 @@ struct SetupView: View {
 @main
 enum Main {
     static func main() {
+        if let game = argument("--convert-movies") { Movies.convertMain(game: game) }
         if appMode {
             migrateUserFolder()
             if rotateLog() && !offerCrashReport() { exit(0) }

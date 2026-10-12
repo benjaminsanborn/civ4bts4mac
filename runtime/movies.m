@@ -1,9 +1,10 @@
 /* QuickTime Movie API on AVFoundation.
  *
- * The game's movies are Sorenson Video 3, which modern macOS can't decode, so
- * tools/transcode_movies.sh converts them to H.264 MP4 under build/movies/
- * (mirroring their path inside the game folder). A guest Movie is an AVPlayer;
- * MoviesTask draws the current frame into the movie's GWorld. */
+ * Most of the game's movies are H.264 or MPEG-4, which play as they are; the
+ * original game's are Sorenson Video 3, which modern macOS can't decode, so
+ * tools/transcode_movies.sh (or the app's setup) converts those to H.264 MP4
+ * under movies/ (mirroring their path inside the game folder). A guest Movie
+ * is an AVPlayer; MoviesTask draws the current frame into the movie's GWorld. */
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
@@ -113,8 +114,21 @@ SHIM(_QTNewDataReferenceFromFullPathCFString) { MOVIE_LOCK;
     RET(noErr);
 }
 
-/* Map a movie inside the game folder to its transcoded MP4. Other media
- * (the MP3 soundtrack) plays from the original file. */
+/* Whether AVFoundation can decode a movie's video (not Sorenson Video). */
+static int playable(NSURL *url) {
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    AVAssetTrack *track = [[asset tracksWithMediaType:AVMediaTypeVideo] firstObject];
+    if (!track || !track.playable) return 0;
+    for (id d in track.formatDescriptions) {
+        FourCharCode codec = CMFormatDescriptionGetMediaSubType((__bridge CMFormatDescriptionRef)d);
+        if (codec == 'SVQ3' || codec == 'SVQ1') return 0;
+    }
+    return 1;
+}
+
+/* Map a movie inside the game folder to its transcoded MP4, or the original if
+ * it plays as it is. Other media (the MP3 soundtrack) plays from the original
+ * file. */
 static NSURL *transcoded_url(const char *path) {
     const char *ext = strrchr(path, '.');
     if (!ext || strcasecmp(ext, ".mov"))
@@ -126,6 +140,8 @@ static NSURL *transcoded_url(const char *path) {
     if (strncasecmp(p, game, n) || p[n] != '/') return nil;
     snprintf(out, sizeof out, "%s/%s.mp4", rt_build_path("movies", link, sizeof link), p + n + 1);
     if (access(out, R_OK)) {
+        NSURL *orig = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+        if (playable(orig)) return orig;
         rt_log("movie not transcoded: %s (run tools/transcode_movies.sh)", out);
         return nil;
     }

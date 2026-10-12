@@ -35,8 +35,12 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/gen"
 
 echo "== launcher"
-swiftc -parse-as-library -O -target arm64-apple-macos13.0 tools/setup/Setup.swift tools/setup/BugMod.swift \
+swiftc -parse-as-library -O -target arm64-apple-macos13.0 tools/setup/Setup.swift tools/setup/BugMod.swift tools/setup/Movies.swift \
     -o "$APP/Contents/MacOS/Civ4BtS"
+
+echo "== movie converter"
+tools/build_ffmpeg.sh
+cp build/ffmpeg/ffmpeg "$APP/Contents/MacOS/ffmpeg"
 
 echo "== game"
 cp build/civ4 "$APP/Contents/MacOS/civ4"
@@ -76,15 +80,23 @@ cp "$ROOT/tools/release/README.txt" "$APP/Contents/Resources/README.txt"
     echo "  programs under any license. Sources: https://github.com/apple-oss-distributions/libstdcxx"
     echo "  and https://ftp.gnu.org/gnu/gcc/gcc-4.2.1/"
     echo "- dlmalloc (Doug Lea, 2023): MIT No Attribution-style permissive license."
+    echo "- FFmpeg 7.1 (Contents/MacOS/ffmpeg, converts the game's Sorenson Video movies): GNU Lesser"
+    echo "  General Public License 2.1 or later, built without GPL parts by tools/build_ffmpeg.sh in"
+    echo "  https://github.com/benjaminsanborn/civ4bts4mac from https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz"
+    echo "  (unmodified). Its license is at the end of this file."
     echo
     echo "------------------------------------------------------------------------------"
     cat third_party/Python-2.6.9/LICENSE
+    echo
+    echo "------------------------------------------------------------------------------"
+    cat third_party/ffmpeg-7.1/COPYING.LGPLv2.1
 } > "$APP/Contents/Resources/LICENSES.txt"
 
 echo "== sign ($SIGN)"
 OPTS="--force --options runtime --timestamp"
 [ "$SIGN" = - ] && OPTS="--force --options runtime"
 codesign $OPTS --sign "$SIGN" "$APP/Contents/MacOS/civ4"
+codesign $OPTS --sign "$SIGN" "$APP/Contents/MacOS/ffmpeg"
 codesign $OPTS --sign "$SIGN" "$APP/Contents/MacOS/Civ4BtS"
 codesign $OPTS --sign "$SIGN" "$APP"
 codesign --verify --deep --strict "$APP"

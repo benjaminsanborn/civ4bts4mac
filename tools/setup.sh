@@ -42,9 +42,9 @@ fi
 
 if [ -z "$GAME" ]; then
     APP=build/setup/Civ4Setup
-    if [ ! -x "$APP" ] || [ tools/setup/Setup.swift -nt "$APP" ] || [ tools/setup/BugMod.swift -nt "$APP" ]; then
+    if [ ! -x "$APP" ] || [ tools/setup/Setup.swift -nt "$APP" ] || [ tools/setup/BugMod.swift -nt "$APP" ] || [ tools/setup/Movies.swift -nt "$APP" ]; then
         echo "building the setup window..."
-        swiftc -parse-as-library -O tools/setup/Setup.swift tools/setup/BugMod.swift -o "$APP"
+        swiftc -parse-as-library -O tools/setup/Setup.swift tools/setup/BugMod.swift tools/setup/Movies.swift -o "$APP"
     fi
     rm -f build/setup/choice.json
     "$APP" --out build/setup/choice.json --root "$ROOT" --current "$(readlink build/game 2>/dev/null || true)" --docs "$DOCS" || true
