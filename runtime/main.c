@@ -397,7 +397,7 @@ static void load_world(const char *path) {
 }
 
 extern const ShimDef shims_libc[], shims_stdio[], shims_pthread[], shims_cf[], shims_files[], shims_posix[], shims_carbon[], shims_dyld[], shims_events[],
-    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[], shims_movies[], shims_unwind[], shims_openal[], shims_net[], shims_cg_image[], shims_sound_converter[], shims_threads_carbon[];
+    shims_platform[], shims_agl[], shims_gl_gen[], shims_gl_special[], shims_gl_text[], shims_qd[], shims_cf_xml[], shims_iokit[], shims_quickdraw[], shims_movies[], shims_unwind[], shims_openal[], shims_net[], shims_cg_image[], shims_sound_converter[], shims_threads_carbon[];
 
 static void register_all_shims(void) {
     rt_register_shims(shims_libc);
@@ -413,6 +413,7 @@ static void register_all_shims(void) {
     rt_register_shims(shims_agl);
     rt_register_shims(shims_gl_gen);
     rt_register_shims(shims_gl_special);
+    rt_register_shims(shims_gl_text);
     rt_register_shims(shims_qd);
     rt_register_shims(shims_cf_xml);
     rt_register_shims(shims_iokit);

@@ -10,9 +10,11 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <math.h>
 #include <dirent.h>
 
 #include "handles.h"
+#include "gl_text.h"
 
 #define TAG_GWORLD 0x4757524cu /* 'GWRL' */
 
@@ -33,6 +35,9 @@ typedef struct {
     int own_pixels;
     uint32_t pixmap;    /* guest PixMapHandle */
     CGContextRef ctx;
+    CGContextRef hi;    /* text GWorlds: the same drawing at `hs` times the resolution (see qd_text_rows) */
+    int hs;
+    uint8_t *hi_drawn;  /* per column: drawn at that resolution (not just copied up from the GWorld) */
     PortState st;
 } HGWorld;
 
@@ -244,6 +249,78 @@ static CGBitmapInfo bitmap_info(uint32_t format) {
     }
 }
 
+/* GWorlds with a high-resolution copy, for gl_text.c. */
+#define MAX_TEXT_ROWS 256
+static HGWorld *g_text_rows[MAX_TEXT_ROWS];
+static int g_ntext_rows;
+int agl_text_scale(void);
+
+static void set_qd_ctm(CGContextRef ctx, const HGWorld *w, int scale) {
+    /* QuickDraw coordinates: origin at bounds top-left, y down. */
+    CGContextTranslateCTM(ctx, 0, w->h * scale);
+    CGContextScaleCTM(ctx, scale, -scale);
+    CGContextTranslateCTM(ctx, -w->left, -w->top);
+    CGContextSetTextMatrix(ctx, CGAffineTransformMakeScale(1, -1));
+}
+
+/* The UI toolkit draws its font glyphs into GWorlds, copies them into texture
+ * atlases and draws them at its layout size, which is stretched to the screen.
+ * A GWorld that text is drawn into keeps a copy drawn at the screen's scale,
+ * which gl_text.c swaps into the atlases so the text is drawn sharp. */
+static CGContextRef hi_ctx(HGWorld *w) {
+    if (w->hi || !w->ctx || w->depth != 32) return w->hi;
+    int s = agl_text_scale();
+    if (s < 2 || g_ntext_rows == MAX_TEXT_ROWS) return NULL;
+    static CGColorSpaceRef cs;
+    if (!cs) cs = CGColorSpaceCreateDeviceRGB();
+    w->hi = CGBitmapContextCreate(NULL, (size_t)(w->w * s), (size_t)(w->h * s), 8, 0, cs, bitmap_info(w->format));
+    if (!w->hi) return NULL;
+    w->hs = s;
+    w->hi_drawn = calloc((size_t)w->w, 1); /* what was drawn before is not in the copy */
+    set_qd_ctm(w->hi, w, s);
+    g_text_rows[g_ntext_rows++] = w;
+    return w->hi;
+}
+/* Whether a rectangle (QuickDraw coordinates) of the GWorld has nothing drawn
+ * in it. The toolkit clears its glyph rows by writing memory, which the
+ * high-resolution copy does not see; a glyph cell found blank is cleared there. */
+static int cell_blank(const HGWorld *w, CGRect r) {
+    int x0 = (int)r.origin.x - w->left, x1 = x0 + (int)r.size.width;
+    int y0 = (int)r.origin.y - w->top, y1 = y0 + (int)r.size.height;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > w->w) x1 = w->w;
+    if (y1 > w->h) y1 = w->h;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++)
+            if (R8_(g_mem, w->pixels + (uint32_t)y * w->rowbytes + 4u * (uint32_t)x + 3)) return 0;
+    return 1;
+}
+static void mark_drawn(HGWorld *w, CGRect r) {
+    if (!w->hi_drawn) return;
+    int x0 = (int)floor(r.origin.x) - w->left, x1 = (int)ceil(r.origin.x + r.size.width) - w->left;
+    for (int x = x0 < 0 ? 0 : x0; x < x1 && x < w->w; x++) w->hi_drawn[x] = 1;
+}
+static void drop_hi(HGWorld *w) {
+    if (!w->hi) return;
+    CGContextRelease(w->hi);
+    w->hi = NULL;
+    free(w->hi_drawn);
+    w->hi_drawn = NULL;
+    for (int i = 0; i < g_ntext_rows; i++)
+        if (g_text_rows[i] == w) { g_text_rows[i] = g_text_rows[--g_ntext_rows]; break; }
+}
+
+int qd_text_rows(QDTextRow *out, int max) {
+    int n = 0;
+    for (int i = 0; i < g_ntext_rows && n < max; i++) {
+        HGWorld *w = g_text_rows[i];
+        out[n++] = (QDTextRow){PTR(w->pixels), w->w, w->h, w->rowbytes, CGBitmapContextGetData(w->hi),
+                               (uint32_t)CGBitmapContextGetBytesPerRow(w->hi), w->hs, w->hi_drawn};
+    }
+    return n;
+}
+
 static HGWorld *new_gworld(uint32_t format, int left, int top, int right, int bottom, uint32_t pixels, uint32_t rowbytes) {
     HGWorld *w = calloc(1, sizeof *w);
     int depth = depth_of(format);
@@ -266,10 +343,7 @@ static HGWorld *new_gworld(uint32_t format, int left, int top, int right, int bo
         w->ctx = CGBitmapContextCreate(PTR(w->pixels), (size_t)w->w, (size_t)w->h, 8, w->rowbytes, cs,
                                        bitmap_info(w->format));
         /* QuickDraw coordinates: origin at bounds top-left, y down. */
-        CGContextTranslateCTM(w->ctx, 0, w->h);
-        CGContextScaleCTM(w->ctx, 1, -1);
-        CGContextTranslateCTM(w->ctx, -left, -top);
-        CGContextSetTextMatrix(w->ctx, CGAffineTransformMakeScale(1, -1));
+        set_qd_ctm(w->ctx, w, 1);
     }
     w->st = g_window_state;
     w->st.pen_h = (int16_t)left;
@@ -312,6 +386,7 @@ SHIM(_DisposeGWorld) {
         CFRelease(d); CFRelease(url); CGImageRelease(img);
     }
     if (g_port == w->g) g_port = 0;
+    drop_hi(w);
     if (w->ctx) CGContextRelease(w->ctx);
     if (w->own_pixels) gfree(w->pixels);
     gfree(R32_(g_mem, w->pixmap));
@@ -376,8 +451,12 @@ static void fill(const uint16_t c[3], CGRect r) {
     HGWorld *w = gw_of(g_port);
     if (!w || !w->ctx) return;
     CGColorRef col = rgb(c);
-    CGContextSetFillColorWithColor(w->ctx, col);
-    CGContextFillRect(w->ctx, r);
+    CGContextRef ctxs[2] = {w->ctx, w->hi};
+    for (int i = 0; i < 2 && ctxs[i]; i++) {
+        CGContextSetFillColorWithColor(ctxs[i], col);
+        CGContextFillRect(ctxs[i], r);
+    }
+    if (r.origin.y <= w->top && r.origin.y + r.size.height >= w->top + w->h) mark_drawn(w, r); /* full columns */
     CGColorRelease(col);
 }
 SHIM(_EraseRect) {
@@ -399,8 +478,11 @@ SHIM(_FrameRect) {
     HGWorld *w = gw_of(g_port);
     if (!w || !w->ctx) return;
     CGColorRef col = rgb(cur()->fore);
-    CGContextSetStrokeColorWithColor(w->ctx, col);
-    CGContextStrokeRectWithWidth(w->ctx, CGRectInset(qd_rect(ARG(0)), 0.5, 0.5), 1);
+    CGContextRef ctxs[2] = {w->ctx, w->hi};
+    for (int i = 0; i < 2 && ctxs[i]; i++) {
+        CGContextSetStrokeColorWithColor(ctxs[i], col);
+        CGContextStrokeRectWithWidth(ctxs[i], CGRectInset(qd_rect(ARG(0)), 0.5, 0.5), 1);
+    }
     CGColorRelease(col);
 }
 SHIM(_LineTo) {
@@ -408,11 +490,14 @@ SHIM(_LineTo) {
     HGWorld *w = gw_of(g_port);
     if (w && w->ctx) {
         CGColorRef col = rgb(s->fore);
-        CGContextSetStrokeColorWithColor(w->ctx, col);
-        CGContextSetLineWidth(w->ctx, s->pen_w);
-        CGContextMoveToPoint(w->ctx, s->pen_h + 0.5, s->pen_v + 0.5);
-        CGContextAddLineToPoint(w->ctx, (int16_t)ARG(0) + 0.5, (int16_t)ARG(1) + 0.5);
-        CGContextStrokePath(w->ctx);
+        CGContextRef ctxs[2] = {w->ctx, w->hi};
+        for (int i = 0; i < 2 && ctxs[i]; i++) {
+            CGContextSetStrokeColorWithColor(ctxs[i], col);
+            CGContextSetLineWidth(ctxs[i], s->pen_w);
+            CGContextMoveToPoint(ctxs[i], s->pen_h + 0.5, s->pen_v + 0.5);
+            CGContextAddLineToPoint(ctxs[i], (int16_t)ARG(0) + 0.5, (int16_t)ARG(1) + 0.5);
+            CGContextStrokePath(ctxs[i]);
+        }
         CGColorRelease(col);
     }
     s->pen_h = (int16_t)ARG(0);
@@ -478,9 +563,14 @@ SHIM(_DrawText) {
                w ? w->left : 0, w ? w->top : 0, CTLineGetTypographicBounds(line, NULL, NULL, NULL),
                ib.origin.x, ib.origin.x + ib.size.width, ib.origin.y, ib.origin.y + ib.size.height);
     }
-    if (w && w->ctx) {
-        CGContextSetShouldAntialias(w->ctx, s->size > 9);
-        CGContextSetTextPosition(w->ctx, s->pen_h, s->pen_v);
+    CGContextRef ctxs[2] = {w ? w->ctx : NULL, w && w->ctx ? hi_ctx(w) : NULL};
+    /* Checked before the glyph lands in the GWorld itself. */
+    int was_blank = n == 1 && ctxs[1] &&
+                    cell_blank(w, CGRectMake(s->pen_h, w->top, lround(CTLineGetTypographicBounds(line, NULL, NULL, NULL)) + 1, w->h));
+    for (int i = 0; i < 2 && ctxs[i]; i++) {
+        CGContextRef ctx = ctxs[i];
+        CGContextSetShouldAntialias(ctx, s->size > 9);
+        CGContextSetTextPosition(ctx, s->pen_h, s->pen_v);
         if (n == 1) {
             /* The UI toolkit builds its glyph atlas by drawing each character
              * alone, one cell (its CharWidth plus a pixel) after the other, and
@@ -495,13 +585,16 @@ SHIM(_DrawText) {
              * the game adds its drop shadow. Real descenders reach further. */
             CGRect ink = CTLineGetImageBounds(line, NULL); /* relative to the pen, y up */
             int overshoot = ink.origin.y < 0 && ink.origin.y > -1;
-            CGContextSaveGState(w->ctx);
-            CGContextClipToRect(w->ctx, CGRectMake(s->pen_h, w->top, lround(adv) + 1,
-                                                   overshoot ? s->pen_v - w->top : w->h));
-            CTLineDraw(line, w->ctx);
-            CGContextRestoreGState(w->ctx);
+            CGRect cell = CGRectMake(s->pen_h, w->top, lround(adv) + 1, w->h);
+            if (ctx == w->hi && was_blank) CGContextClearRect(ctx, cell);
+            if (ctx == w->hi && was_blank) mark_drawn(w, cell);
+            CGContextSaveGState(ctx);
+            CGContextClipToRect(ctx, CGRectMake(cell.origin.x, cell.origin.y, cell.size.width,
+                                                overshoot ? s->pen_v - w->top : w->h));
+            CTLineDraw(line, ctx);
+            CGContextRestoreGState(ctx);
         } else {
-            CTLineDraw(line, w->ctx);
+            CTLineDraw(line, ctx);
         }
     }
     s->pen_h = (int16_t)(s->pen_h + lround(CTLineGetTypographicBounds(line, NULL, NULL, NULL)));
@@ -524,6 +617,8 @@ SHIM(_CopyBits) {
     memcpy(db, PTR(dp + 6), 8);
     int dw = dr[3] - dr[1], dh = dr[2] - dr[0], sw = sr[3] - sr[1], sh = sr[2] - sr[0];
     if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 || !sbase || !dbase) return;
+    for (int i = 0; i < g_ntext_rows; i++) /* its high-resolution copy would no longer match */
+        if (g_text_rows[i]->pixels == dbase) { drop_hi(g_text_rows[i]); break; }
     for (int y = 0; y < dh; y++) {
         int syy = sr[0] + y * sh / dh - sb[0], dyy = dr[0] + y - db[0];
         if (syy < 0 || dyy < 0 || syy >= sb[2] - sb[0] || dyy >= db[2] - db[0]) continue;

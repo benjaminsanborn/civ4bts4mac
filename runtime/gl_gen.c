@@ -44,7 +44,6 @@ SHIM(_glDeleteObjectARB) { glDeleteObjectARB((GLhandleARB)(uintptr_t)ARG(0)); }
 SHIM(_glDeleteProgramsARB) { glDeleteProgramsARB((GLsizei)ARG(0), PTR(ARG(1))); }
 SHIM(_glDeleteQueriesARB) { glDeleteQueriesARB((GLsizei)ARG(0), PTR(ARG(1))); }
 SHIM(_glDeleteRenderbuffersEXT) { glDeleteRenderbuffersEXT((GLsizei)ARG(0), PTR(ARG(1))); }
-SHIM(_glDeleteTextures) { glDeleteTextures((GLsizei)ARG(0), PTR(ARG(1))); }
 SHIM(_glDepthFunc) { glDepthFunc((GLenum)ARG(0)); }
 SHIM(_glDepthMask) { glDepthMask((GLboolean)ARG(0)); }
 SHIM(_glDepthRange) { glDepthRange(ARGF64(0), ARGF64(2)); }
@@ -136,12 +135,10 @@ SHIM(_glTexEnvfv) { glTexEnvfv((GLenum)ARG(0), (GLenum)ARG(1), PTR(ARG(2))); }
 SHIM(_glTexEnvi) { glTexEnvi((GLenum)ARG(0), (GLenum)ARG(1), (GLint)ARG(2)); }
 SHIM(_glTexGenfv) { glTexGenfv((GLenum)ARG(0), (GLenum)ARG(1), PTR(ARG(2))); }
 SHIM(_glTexGeni) { glTexGeni((GLenum)ARG(0), (GLenum)ARG(1), (GLint)ARG(2)); }
-SHIM(_glTexImage2D) { glTexImage2D((GLenum)ARG(0), (GLint)ARG(1), (GLint)ARG(2), (GLsizei)ARG(3), (GLsizei)ARG(4), (GLint)ARG(5), (GLenum)ARG(6), (GLenum)ARG(7), PTR(ARG(8))); }
 SHIM(_glTexImage3D) { glTexImage3D((GLenum)ARG(0), (GLint)ARG(1), (GLint)ARG(2), (GLsizei)ARG(3), (GLsizei)ARG(4), (GLsizei)ARG(5), (GLint)ARG(6), (GLenum)ARG(7), (GLenum)ARG(8), PTR(ARG(9))); }
 SHIM(_glTexParameterf) { glTexParameterf((GLenum)ARG(0), (GLenum)ARG(1), ARGF32(2)); }
 SHIM(_glTexParameterfv) { glTexParameterfv((GLenum)ARG(0), (GLenum)ARG(1), PTR(ARG(2))); }
 SHIM(_glTexParameteri) { glTexParameteri((GLenum)ARG(0), (GLenum)ARG(1), (GLint)ARG(2)); }
-SHIM(_glTexSubImage2D) { glTexSubImage2D((GLenum)ARG(0), (GLint)ARG(1), (GLint)ARG(2), (GLint)ARG(3), (GLsizei)ARG(4), (GLsizei)ARG(5), (GLenum)ARG(6), (GLenum)ARG(7), PTR(ARG(8))); }
 SHIM(_glTextureRangeAPPLE) { glTextureRangeAPPLE((GLenum)ARG(0), (GLsizei)ARG(1), PTR(ARG(2))); }
 SHIM(_glTranslatef) { glTranslatef(ARGF32(0), ARGF32(1), ARGF32(2)); }
 SHIM(_glUniform1fvARB) { glUniform1fvARB((GLint)ARG(0), (GLsizei)ARG(1), PTR(ARG(2))); }
@@ -172,34 +169,34 @@ const ShimDef shims_gl_gen[] = {
     SHIM_ENTRY(_glCompressedTexImage2D), SHIM_ENTRY(_glCompressedTexImage2DARB), SHIM_ENTRY(_glCompressedTexImage3DARB), SHIM_ENTRY(_glCreateProgramObjectARB),
     SHIM_ENTRY(_glCreateShaderObjectARB), SHIM_ENTRY(_glDeleteBuffersARB), SHIM_ENTRY(_glDeleteFramebuffersEXT), SHIM_ENTRY(_glDeleteLists),
     SHIM_ENTRY(_glDeleteObjectARB), SHIM_ENTRY(_glDeleteProgramsARB), SHIM_ENTRY(_glDeleteQueriesARB), SHIM_ENTRY(_glDeleteRenderbuffersEXT),
-    SHIM_ENTRY(_glDeleteTextures), SHIM_ENTRY(_glDepthFunc), SHIM_ENTRY(_glDepthMask), SHIM_ENTRY(_glDepthRange),
-    SHIM_ENTRY(_glDisable), SHIM_ENTRY(_glDisableClientState), SHIM_ENTRY(_glDisableVertexAttribArrayARB), SHIM_ENTRY(_glDrawArrays),
-    SHIM_ENTRY(_glDrawBuffersARB), SHIM_ENTRY(_glEnable), SHIM_ENTRY(_glEnableClientState), SHIM_ENTRY(_glEnableVertexAttribArrayARB),
-    SHIM_ENTRY(_glEnd), SHIM_ENTRY(_glEndQueryARB), SHIM_ENTRY(_glFinish), SHIM_ENTRY(_glFlush),
-    SHIM_ENTRY(_glFogf), SHIM_ENTRY(_glFogfv), SHIM_ENTRY(_glFogi), SHIM_ENTRY(_glFramebufferRenderbufferEXT),
-    SHIM_ENTRY(_glFramebufferTexture2DEXT), SHIM_ENTRY(_glFrontFace), SHIM_ENTRY(_glGenBuffersARB), SHIM_ENTRY(_glGenFramebuffersEXT),
-    SHIM_ENTRY(_glGenLists), SHIM_ENTRY(_glGenProgramsARB), SHIM_ENTRY(_glGenQueriesARB), SHIM_ENTRY(_glGenRenderbuffersEXT),
-    SHIM_ENTRY(_glGenTextures), SHIM_ENTRY(_glGetAttribLocationARB), SHIM_ENTRY(_glGetCompressedTexImageARB), SHIM_ENTRY(_glGetError),
-    SHIM_ENTRY(_glGetHandleARB), SHIM_ENTRY(_glGetInfoLogARB), SHIM_ENTRY(_glGetObjectParameterivARB), SHIM_ENTRY(_glGetProgramivARB),
-    SHIM_ENTRY(_glGetQueryObjectuivARB), SHIM_ENTRY(_glGetTexEnvfv), SHIM_ENTRY(_glGetTexEnviv), SHIM_ENTRY(_glGetTexImage),
-    SHIM_ENTRY(_glGetTexParameteriv), SHIM_ENTRY(_glGetUniformLocationARB), SHIM_ENTRY(_glHint), SHIM_ENTRY(_glIsEnabled),
-    SHIM_ENTRY(_glLightModelfv), SHIM_ENTRY(_glLightModeli), SHIM_ENTRY(_glLightf), SHIM_ENTRY(_glLightfv),
-    SHIM_ENTRY(_glLighti), SHIM_ENTRY(_glLinkProgramARB), SHIM_ENTRY(_glListBase), SHIM_ENTRY(_glLoadIdentity),
-    SHIM_ENTRY(_glLoadMatrixf), SHIM_ENTRY(_glMaterialf), SHIM_ENTRY(_glMaterialfv), SHIM_ENTRY(_glMatrixMode),
-    SHIM_ENTRY(_glMultMatrixf), SHIM_ENTRY(_glMultiTexCoord1fvARB), SHIM_ENTRY(_glMultiTexCoord2fvARB), SHIM_ENTRY(_glMultiTexCoord3fvARB),
-    SHIM_ENTRY(_glMultiTexCoord4fvARB), SHIM_ENTRY(_glPixelStorei), SHIM_ENTRY(_glPixelZoom), SHIM_ENTRY(_glPolygonMode),
-    SHIM_ENTRY(_glPolygonOffset), SHIM_ENTRY(_glPopAttrib), SHIM_ENTRY(_glPopClientAttrib), SHIM_ENTRY(_glPopMatrix),
-    SHIM_ENTRY(_glProgramEnvParameter4fvARB), SHIM_ENTRY(_glProgramEnvParameters4fvEXT), SHIM_ENTRY(_glProgramStringARB), SHIM_ENTRY(_glPushAttrib),
-    SHIM_ENTRY(_glPushClientAttrib), SHIM_ENTRY(_glPushMatrix), SHIM_ENTRY(_glRasterPos2i), SHIM_ENTRY(_glRenderbufferStorageEXT),
-    SHIM_ENTRY(_glScalef), SHIM_ENTRY(_glSecondaryColor3f), SHIM_ENTRY(_glSecondaryColor3ubv), SHIM_ENTRY(_glShadeModel),
-    SHIM_ENTRY(_glStencilFunc), SHIM_ENTRY(_glStencilFuncSeparateATI), SHIM_ENTRY(_glStencilMask), SHIM_ENTRY(_glStencilOp),
-    SHIM_ENTRY(_glStencilOpSeparateATI), SHIM_ENTRY(_glTexCoord2f), SHIM_ENTRY(_glTexCoord4f), SHIM_ENTRY(_glTexEnvf),
-    SHIM_ENTRY(_glTexEnvfv), SHIM_ENTRY(_glTexEnvi), SHIM_ENTRY(_glTexGenfv), SHIM_ENTRY(_glTexGeni),
-    SHIM_ENTRY(_glTexImage2D), SHIM_ENTRY(_glTexImage3D), SHIM_ENTRY(_glTexParameterf), SHIM_ENTRY(_glTexParameterfv),
-    SHIM_ENTRY(_glTexParameteri), SHIM_ENTRY(_glTexSubImage2D), SHIM_ENTRY(_glTextureRangeAPPLE), SHIM_ENTRY(_glTranslatef),
-    SHIM_ENTRY(_glUniform1fvARB), SHIM_ENTRY(_glUniform1iARB), SHIM_ENTRY(_glUniform1ivARB), SHIM_ENTRY(_glUniform2fvARB),
-    SHIM_ENTRY(_glUniform2ivARB), SHIM_ENTRY(_glUniform3fvARB), SHIM_ENTRY(_glUniform3ivARB), SHIM_ENTRY(_glUniform4fvARB),
-    SHIM_ENTRY(_glUniform4ivARB), SHIM_ENTRY(_glUniformMatrix2fvARB), SHIM_ENTRY(_glUniformMatrix3fvARB), SHIM_ENTRY(_glUniformMatrix4fvARB),
-    SHIM_ENTRY(_glUseProgramObjectARB), SHIM_ENTRY(_glValidateProgramARB), SHIM_ENTRY(_glVertex2f), SHIM_ENTRY(_glVertex4f),
+    SHIM_ENTRY(_glDepthFunc), SHIM_ENTRY(_glDepthMask), SHIM_ENTRY(_glDepthRange), SHIM_ENTRY(_glDisable),
+    SHIM_ENTRY(_glDisableClientState), SHIM_ENTRY(_glDisableVertexAttribArrayARB), SHIM_ENTRY(_glDrawArrays), SHIM_ENTRY(_glDrawBuffersARB),
+    SHIM_ENTRY(_glEnable), SHIM_ENTRY(_glEnableClientState), SHIM_ENTRY(_glEnableVertexAttribArrayARB), SHIM_ENTRY(_glEnd),
+    SHIM_ENTRY(_glEndQueryARB), SHIM_ENTRY(_glFinish), SHIM_ENTRY(_glFlush), SHIM_ENTRY(_glFogf),
+    SHIM_ENTRY(_glFogfv), SHIM_ENTRY(_glFogi), SHIM_ENTRY(_glFramebufferRenderbufferEXT), SHIM_ENTRY(_glFramebufferTexture2DEXT),
+    SHIM_ENTRY(_glFrontFace), SHIM_ENTRY(_glGenBuffersARB), SHIM_ENTRY(_glGenFramebuffersEXT), SHIM_ENTRY(_glGenLists),
+    SHIM_ENTRY(_glGenProgramsARB), SHIM_ENTRY(_glGenQueriesARB), SHIM_ENTRY(_glGenRenderbuffersEXT), SHIM_ENTRY(_glGenTextures),
+    SHIM_ENTRY(_glGetAttribLocationARB), SHIM_ENTRY(_glGetCompressedTexImageARB), SHIM_ENTRY(_glGetError), SHIM_ENTRY(_glGetHandleARB),
+    SHIM_ENTRY(_glGetInfoLogARB), SHIM_ENTRY(_glGetObjectParameterivARB), SHIM_ENTRY(_glGetProgramivARB), SHIM_ENTRY(_glGetQueryObjectuivARB),
+    SHIM_ENTRY(_glGetTexEnvfv), SHIM_ENTRY(_glGetTexEnviv), SHIM_ENTRY(_glGetTexImage), SHIM_ENTRY(_glGetTexParameteriv),
+    SHIM_ENTRY(_glGetUniformLocationARB), SHIM_ENTRY(_glHint), SHIM_ENTRY(_glIsEnabled), SHIM_ENTRY(_glLightModelfv),
+    SHIM_ENTRY(_glLightModeli), SHIM_ENTRY(_glLightf), SHIM_ENTRY(_glLightfv), SHIM_ENTRY(_glLighti),
+    SHIM_ENTRY(_glLinkProgramARB), SHIM_ENTRY(_glListBase), SHIM_ENTRY(_glLoadIdentity), SHIM_ENTRY(_glLoadMatrixf),
+    SHIM_ENTRY(_glMaterialf), SHIM_ENTRY(_glMaterialfv), SHIM_ENTRY(_glMatrixMode), SHIM_ENTRY(_glMultMatrixf),
+    SHIM_ENTRY(_glMultiTexCoord1fvARB), SHIM_ENTRY(_glMultiTexCoord2fvARB), SHIM_ENTRY(_glMultiTexCoord3fvARB), SHIM_ENTRY(_glMultiTexCoord4fvARB),
+    SHIM_ENTRY(_glPixelStorei), SHIM_ENTRY(_glPixelZoom), SHIM_ENTRY(_glPolygonMode), SHIM_ENTRY(_glPolygonOffset),
+    SHIM_ENTRY(_glPopAttrib), SHIM_ENTRY(_glPopClientAttrib), SHIM_ENTRY(_glPopMatrix), SHIM_ENTRY(_glProgramEnvParameter4fvARB),
+    SHIM_ENTRY(_glProgramEnvParameters4fvEXT), SHIM_ENTRY(_glProgramStringARB), SHIM_ENTRY(_glPushAttrib), SHIM_ENTRY(_glPushClientAttrib),
+    SHIM_ENTRY(_glPushMatrix), SHIM_ENTRY(_glRasterPos2i), SHIM_ENTRY(_glRenderbufferStorageEXT), SHIM_ENTRY(_glScalef),
+    SHIM_ENTRY(_glSecondaryColor3f), SHIM_ENTRY(_glSecondaryColor3ubv), SHIM_ENTRY(_glShadeModel), SHIM_ENTRY(_glStencilFunc),
+    SHIM_ENTRY(_glStencilFuncSeparateATI), SHIM_ENTRY(_glStencilMask), SHIM_ENTRY(_glStencilOp), SHIM_ENTRY(_glStencilOpSeparateATI),
+    SHIM_ENTRY(_glTexCoord2f), SHIM_ENTRY(_glTexCoord4f), SHIM_ENTRY(_glTexEnvf), SHIM_ENTRY(_glTexEnvfv),
+    SHIM_ENTRY(_glTexEnvi), SHIM_ENTRY(_glTexGenfv), SHIM_ENTRY(_glTexGeni), SHIM_ENTRY(_glTexImage3D),
+    SHIM_ENTRY(_glTexParameterf), SHIM_ENTRY(_glTexParameterfv), SHIM_ENTRY(_glTexParameteri), SHIM_ENTRY(_glTextureRangeAPPLE),
+    SHIM_ENTRY(_glTranslatef), SHIM_ENTRY(_glUniform1fvARB), SHIM_ENTRY(_glUniform1iARB), SHIM_ENTRY(_glUniform1ivARB),
+    SHIM_ENTRY(_glUniform2fvARB), SHIM_ENTRY(_glUniform2ivARB), SHIM_ENTRY(_glUniform3fvARB), SHIM_ENTRY(_glUniform3ivARB),
+    SHIM_ENTRY(_glUniform4fvARB), SHIM_ENTRY(_glUniform4ivARB), SHIM_ENTRY(_glUniformMatrix2fvARB), SHIM_ENTRY(_glUniformMatrix3fvARB),
+    SHIM_ENTRY(_glUniformMatrix4fvARB), SHIM_ENTRY(_glUseProgramObjectARB), SHIM_ENTRY(_glValidateProgramARB), SHIM_ENTRY(_glVertex2f),
+    SHIM_ENTRY(_glVertex4f),
     {0, 0},
 };

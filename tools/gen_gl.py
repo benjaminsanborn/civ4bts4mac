@@ -19,6 +19,7 @@ SPECIAL = {
     "glSecondaryColorPointer", "glVertexAttribPointerARB", "glDrawRangeElements", "gluCheckExtension",
     "glBindFramebufferEXT", "glDrawBuffer", "glReadBuffer", "glViewport", "glScissor", "glGetIntegerv",
     "glGetFloatv", "glWindowPos2i", "glCopyPixels", "glReadPixels", "glCopyTexSubImage2D", "glCopyTexImage2D",
+    "glTexImage2D", "glTexSubImage2D", "glDeleteTextures",  # gl_text.c
 }
 
 INT_TYPES = {"GLenum", "GLboolean", "GLbitfield", "GLbyte", "GLshort", "GLint", "GLsizei", "GLubyte", "GLushort",

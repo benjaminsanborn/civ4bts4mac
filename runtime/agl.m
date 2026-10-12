@@ -134,6 +134,23 @@ int agl_window_scale(float *sx, float *sy) {
     return 1;
 }
 
+/* Window pixels per game pixel on the display port (0 when it is not scaled). */
+float agl_display_scale(void) {
+    float s = 0;
+    for (int i = 0; i < g_nctx; i++)
+        if (g_ctxs[i] && g_ctxs[i]->sx > s) s = g_ctxs[i]->sx;
+    return s;
+}
+
+/* The scale UI text is drawn at for sharp text (gl_text.c): the screen's
+ * backing scale when the game renders at screen resolution, else 1. */
+int agl_text_scale(void) {
+    if (!native_res()) return 1;
+    static int scale;
+    if (!scale) scale = (int)ceil([[NSScreen mainScreen] backingScaleFactor]);
+    return scale;
+}
+
 void gl_retarget_begin(void);
 void gl_retarget_end(void);
 
