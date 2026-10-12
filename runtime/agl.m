@@ -43,6 +43,7 @@ typedef struct {
     uint32_t port; /* drawable */
     uint32_t g;
     struct HPBuf *pbuf; /* pbuffer drawable (aglSetPBuffer), or NULL */
+    float sx, sy;       /* window pixels per game pixel on the display port (0: not scaled) */
 } HCtx;
 
 /* Pbuffers are FBOs. aglTexImagePBuffer makes the bound texture the FBO's color
@@ -84,6 +85,57 @@ static uint32_t wrap_ctx(NSOpenGLContext *ctx) {
     if (g_nctx < 64) g_ctxs[g_nctx++] = c;
     return c->g;
 }
+
+/* The display port renders at the screen's full pixel resolution, while the
+ * game lays itself out at its mode size: the mode works as a UI size, and the
+ * 3D view, lines and edges stay sharp at every one. The game's viewport and
+ * scissor rectangles on the window are scaled to match (gl_special.c), so it
+ * never sees the difference. CIV4_NATIVE_RES=0 renders at the mode size and
+ * lets the system scale it, as before. */
+static int native_res(void) {
+    static int on = -1;
+    if (on < 0) on = !getenv("CIV4_NATIVE_RES") || strcmp(getenv("CIV4_NATIVE_RES"), "0");
+    return on;
+}
+static void size_display_surface(HCtx *c, HWindow *w) {
+    NSView *v = (__bridge NSView *)w->view;
+    NSSize px = [v convertSizeToBacking:[v bounds].size];
+    GLint size[2] = {w->mode_w, w->mode_h};
+    c->sx = c->sy = 0;
+    if (native_res() && px.width > w->mode_w && px.height > w->mode_h) {
+        size[0] = (GLint)px.width;
+        size[1] = (GLint)px.height;
+        c->sx = (float)size[0] / w->mode_w;
+        c->sy = (float)size[1] / w->mode_h;
+    }
+    CGLSetParameter([c->ctx CGLContextObj], kCGLCPSurfaceBackingSize, size);
+    CGLEnable([c->ctx CGLContextObj], kCGLCESurfaceBackingSize);
+}
+
+/* Scale from game to window pixels for the current context, when it is
+ * drawing to the display port's window framebuffer (not a pbuffer or FBO). */
+int agl_window_scale(float *sx, float *sy) {
+    CGLContextObj cgl = CGLGetCurrentContext();
+    static CGLContextObj last;
+    static HCtx *lastc;
+    if (cgl != last) {
+        last = cgl;
+        lastc = NULL;
+        for (int i = 0; i < g_nctx; i++)
+            if (g_ctxs[i] && [g_ctxs[i]->ctx CGLContextObj] == cgl) lastc = g_ctxs[i];
+    }
+    HCtx *c = lastc;
+    if (!c || !c->sx || c->pbuf) return 0;
+    GLint fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &fb);
+    if (fb) return 0;
+    *sx = c->sx;
+    *sy = c->sy;
+    return 1;
+}
+
+void gl_retarget_begin(void);
+void gl_retarget_end(void);
 
 /* ---- AGL ---- */
 SHIM(_aglChoosePixelFormat) {
@@ -166,7 +218,7 @@ SHIM(_aglGetCurrentContext) {
     NSOpenGLContext *cur = [NSOpenGLContext currentContext];
     RET(cur ? ctx_for_cgl([cur CGLContextObj]) : 0);
 }
-SHIM(_aglSetDrawable) {
+static void aglSetDrawable_impl(CPU *cpu) {
     HCtx *c = ctx_of(ARG(0));
     if (!c) { RET(0); return; }
     if (c->pbuf) {
@@ -187,18 +239,32 @@ SHIM(_aglSetDrawable) {
         HWindow *w = gh_get(ARG(1), TAG_PORT);
         if (!w) rt_fatal("aglSetDrawable: not a window port %08x", ARG(1));
         [c->ctx setView:(__bridge NSView *)w->view];
-        if (w->mode_w) {
-            /* Display port: render at the game's mode size; the system scales it up. */
-            GLint size[2] = {w->mode_w, w->mode_h};
-            CGLSetParameter([c->ctx CGLContextObj], kCGLCPSurfaceBackingSize, size);
-            CGLEnable([c->ctx CGLContextObj], kCGLCESurfaceBackingSize);
-        }
+        if (w->mode_w) size_display_surface(c, w);
+        else c->sx = c->sy = 0;
         [c->ctx update];
     }
     RET(1);
 }
+SHIM(_aglSetDrawable) {
+    gl_retarget_begin();
+    aglSetDrawable_impl(cpu);
+    gl_retarget_end();
+}
 SHIM(_aglGetDrawable) { HCtx *c = ctx_of(ARG(0)); RET(c ? c->port : 0); }
-SHIM(_aglUpdateContext) { HCtx *c = ctx_of(ARG(0)); if (c) [c->ctx update]; RET(1); }
+static void aglUpdateContext_impl(CPU *cpu) {
+    HCtx *c = ctx_of(ARG(0));
+    if (c) {
+        HWindow *w = c->port ? gh_get(c->port, TAG_PORT) : NULL;
+        if (w && w->mode_w) size_display_surface(c, w); /* the mode may have changed */
+        [c->ctx update];
+    }
+    RET(1);
+}
+SHIM(_aglUpdateContext) {
+    gl_retarget_begin();
+    aglUpdateContext_impl(cpu);
+    gl_retarget_end();
+}
 /* CIV4_FRAMES=dir: save the game's back buffer as PNG every couple of seconds
  * (inspection without screen capture). */
 #import <ImageIO/ImageIO.h>
@@ -470,7 +536,7 @@ SHIM(_aglTexImagePBuffer) {
     if (p->fbo) pbuf_attach(p);
     RET(1);
 }
-SHIM(_aglSetPBuffer) {
+static void aglSetPBuffer_impl(CPU *cpu) {
     /* (AGLContext, AGLPbuffer, GLint face, GLint level, GLint virtualScreen) */
     HCtx *c = ctx_of(ARG(0));
     HPBuf *p = gh_get(ARG(1), TAG_PBUFFER);
@@ -484,6 +550,11 @@ SHIM(_aglSetPBuffer) {
         glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
     }
     RET(1);
+}
+SHIM(_aglSetPBuffer) {
+    gl_retarget_begin();
+    aglSetPBuffer_impl(cpu);
+    gl_retarget_end();
 }
 SHIM(_aglDestroyPBuffer) {
     HPBuf *p = gh_get(ARG(0), TAG_PBUFFER);
@@ -672,13 +743,14 @@ static void ensure_modes(void) {
     int sw = (int)sf.size.width, sh = (int)sf.size.height;
     int notch = 0;
     if (@available(macOS 12.0, *)) notch = (int)[screen safeAreaInsets].top;
-    /* The game is shown in the screen area below the notch. Offer only modes
-     * that look right there: that area's size and its full Retina pixel size
-     * (exactly 1 and 2 screen pixels per game pixel), and smaller modes of
-     * about the same shape (scaled up, smooth). Modes between the two get scaled
-     * down by an odd factor, which makes text shimmer and fringe, and other
-     * shapes get black bars. */
+    /* The game is shown in the screen area below the notch. Offer modes of
+     * about that area's shape (other shapes get black bars), plus its exact
+     * size in points and in pixels. Rendering at full pixel resolution, a mode
+     * is just the UI size, up to one game pixel per screen pixel. Without it
+     * (CIV4_NATIVE_RES=0) modes above the point size are scaled down by an
+     * odd factor, which makes text shimmer and fringe, so they're left out. */
     int aw = sw, ah = sh - notch;
+    int maxw = native_res() ? (int)(aw * scale) : aw, maxh = native_res() ? (int)(ah * scale) : ah;
     double aspect = (double)aw / ah;
     int extra[2][2] = {{aw, ah}, {(int)(aw * scale), (int)(ah * scale)}};
     int cand[64][2], nc = 0;
@@ -688,7 +760,7 @@ static void ensure_modes(void) {
     for (int i = 0; i < nc; i++) {
         int w = cand[i][0], h = cand[i][1];
         int exact = (w == extra[0][0] && h == extra[0][1]) || (w == extra[1][0] && h == extra[1][1]);
-        if (!exact && (w > aw || h > ah || fabs((double)w / h / aspect - 1) > 0.06)) continue;
+        if (!exact && (w > maxw || h > maxh || fabs((double)w / h / aspect - 1) > 0.02)) continue;
         int dup = 0;
         for (int j = 0; j < i; j++) dup |= cand[j][0] == w && cand[j][1] == h;
         if (dup) continue;

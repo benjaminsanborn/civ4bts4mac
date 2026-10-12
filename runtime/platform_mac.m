@@ -170,6 +170,10 @@ static void layout_display(HWindow *d) {
     if (@available(macOS 12.0, *)) b.size.height -= [[(__bridge NSWindow *)d->ns screen] safeAreaInsets].top;
     double scale = fmin(b.size.width / d->mode_w, b.size.height / d->mode_h);
     double w = round(d->mode_w * scale), h = round(d->mode_h * scale);
+    /* Within a point of filling the screen (the notch strip can be a
+     * half-point tall): fill it, for whole screen pixels per game pixel. */
+    if (b.size.width - w <= 1) w = b.size.width;
+    if (fabs(b.size.height - h) <= 1) h = round(b.size.height);
     [(__bridge NSView *)d->view setFrame:NSMakeRect(round((b.size.width - w) / 2), round((b.size.height - h) / 2), w, h)];
 }
 
@@ -383,21 +387,25 @@ static void script_step(ScriptStep *st) {
         script_mouse(kEventMouseDown, b, at);
         g_script_up = b;
         g_script_up_t = ev_now() + 0.15;
-    } else if (!strcmp(st->cmd, "key")) {
-        /* Shifted symbols type as shift + their unshifted key. */
+    } else if (strlen(st->cmd) >= 3 && !strcmp(st->cmd + strlen(st->cmd) - 3, "key") &&
+               strspn(st->cmd, "cas") == strlen(st->cmd) - 3) {
+        /* Shifted symbols type as shift + their unshifted key; a c/a/s prefix
+         * ("ckey", "cakey") holds control/option/shift. */
+        uint32_t held = (strchr(st->cmd, 'c') ? controlKey : 0) | (strchr(st->cmd, 'a') ? optionKey : 0) |
+                        (strchr(st->cmd, 's') ? shiftKey : 0);
         static const char shifted[] = "!1@2#3$4%5^6&7*8(9)0_-+={[}]|\\:;\"'<,>.?/~`";
         for (const char *c = st->arg; *c; c++) {
             char base = *c;
-            uint32_t mods = 0;
-            if (*c >= 'A' && *c <= 'Z') base = (char)(*c + 32), mods = shiftKey;
+            uint32_t mods = held;
+            if (*c >= 'A' && *c <= 'Z') base = (char)(*c + 32), mods |= shiftKey;
             for (int k = 0; shifted[k]; k += 2)
-                if (shifted[k] == *c) base = shifted[k + 1], mods = shiftKey;
+                if (shifted[k] == *c) base = shifted[k + 1], mods |= shiftKey;
             uint32_t code = (uint32_t)keycode_for((unichar)base);
             double t = g_nkeysteps > g_keystep_pos ? g_keysteps[g_nkeysteps - 1].t : ev_now();
-            if (mods) queue_key(t += 0.03, kEventRawKeyModifiersChanged, 56, mods, 0, 0);
+            if (mods) queue_key(t += 0.03, kEventRawKeyModifiersChanged, (held & controlKey) ? 59 : (held & optionKey) ? 58 : 56, mods, 0, 0);
             queue_key(t += 0.03, kEventRawKeyDown, code, mods, *c, base);
             queue_key(t += 0.03, kEventRawKeyUp, code, mods, *c, base);
-            if (mods) queue_key(t += 0.03, kEventRawKeyModifiersChanged, 56, 0, 0, 0);
+            if (mods) queue_key(t += 0.03, kEventRawKeyModifiersChanged, (held & controlKey) ? 59 : (held & optionKey) ? 58 : 56, 0, 0, 0);
         }
     } else if (!strcmp(st->cmd, "keycode")) {
         int code = atoi(st->arg);
