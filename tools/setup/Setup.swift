@@ -1,8 +1,9 @@
 // Setup window and launcher for the native Civilization IV: Beyond the Sword build.
 //
 // Development: run by tools/setup.sh before the game is built and linked:
-//   Civ4Setup --out FILE [--current GAMEDIR] [--docs USERDIR]
-// writes the choices to FILE as JSON and exits 0 (1 if cancelled).
+//   Civ4Setup --out FILE [--root REPO] [--current GAMEDIR] [--docs USERDIR]
+// checks the build tools, writes the choices to FILE as JSON and exits 0 (1 if
+// cancelled).
 //
 // App: the bundle's main executable. If the saved installation is still valid
 // (and Option isn't held), it starts the game straight away; otherwise it shows
@@ -117,6 +118,54 @@ func validate(_ root: String) -> [Check] {
     return checks
 }
 
+/// Runs a program; its exit status and output (stdout and stderr).
+func run(_ path: String, _ args: [String]) -> (status: Int32, output: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: path)
+    p.arguments = args
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = pipe
+    guard (try? p.run()) != nil else { return (-1, "") }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return (p.terminationStatus, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+/// What building from source needs (development only; the app is prebuilt).
+func buildChecks(root: String) -> [Check] {
+    var checks: [Check] = []
+    var arm64: Int32 = 0
+    var size = MemoryLayout<Int32>.size
+    let silicon = sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0) == 0 && arm64 == 1
+    checks.append(Check(title: "Apple Silicon Mac", ok: silicon, detail: silicon ? "arm64" : "this build needs Apple Silicon"))
+    let tools = run("/usr/bin/xcode-select", ["-p"])
+    let hasTools = tools.status == 0
+    checks.append(Check(title: "Xcode command line tools", ok: hasTools, detail: hasTools ? tools.output : "not installed"))
+    guard hasTools else { return checks }
+    let clang = run("/usr/bin/xcrun", ["clang", "--version"])
+    let clangOK = clang.status == 0
+    checks.append(Check(title: "C compiler", ok: clangOK,
+                        detail: clangOK ? String(clang.output.split(separator: "\n").first ?? "") : "clang not found"))
+    // The guest libraries are compiled for the game's 32-bit Intel code.
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("civ4-i386-check")
+    try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    let src = tmp.appendingPathComponent("t.c").path
+    try? "#include <stdlib.h>\nint f(void) { return abs(-1); }\n".write(toFile: src, atomically: true, encoding: .utf8)
+    let i386 = run("/usr/bin/xcrun", ["clang", "-target", "i386-apple-macos10.6", "-c", src, "-o", tmp.appendingPathComponent("t.o").path])
+    checks.append(Check(title: "32-bit Intel compile target", ok: i386.status == 0,
+                        detail: i386.status == 0 ? "i386-apple-macos10.6" : String(i386.output.prefix(80))))
+    let py = run("/usr/bin/xcrun", ["python3", "--version"])
+    checks.append(Check(title: "Python 3", ok: py.status == 0, detail: py.status == 0 ? py.output : "python3 not found"))
+    let builtBefore = FileManager.default.fileExists(atPath: root + "/build/libgame.a")
+    let free = (try? URL(fileURLWithPath: root).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+        .volumeAvailableCapacityForImportantUsage ?? 0
+    let gb = Double(free) / 1e9
+    checks.append(Check(title: "Disk space (a build takes about 10 GB)", ok: builtBefore || gb >= 12,
+                        detail: String(format: "%.0f GB free", gb)))
+    return checks
+}
+
 /// Steam libraries (libraryfolders.vdf) and /Applications, for folders that look like Civ IV.
 func detectInstalls(current: String?) -> [Install] {
     let fm = FileManager.default
@@ -152,6 +201,7 @@ final class Model: ObservableObject {
     @Published var installs: [Install]
     @Published var selected: Install?
     @Published var checks: [Check] = []
+    @Published var toolChecks: [Check] = []   // development: what the build needs
     @Published var installBUG: Bool
     @Published var bugMode: String
     @Published var working: String?   // progress while applying the choice
@@ -166,14 +216,22 @@ final class Model: ObservableObject {
         bugMode = bugWasInstalled ?? "customassets"
         let firstValid = installs.first { validate($0.path).allSatisfy(\.ok) }
         select(firstValid ?? installs.first)
+        checkTools()
     }
+
+    let root = argument("--root") ?? FileManager.default.currentDirectoryPath
+    func checkTools() {
+        guard !appMode else { return }
+        toolChecks = buildChecks(root: root)
+    }
+    var toolsOK: Bool { appMode || toolChecks.allSatisfy(\.ok) }
 
     func select(_ i: Install?) {
         selected = i
         checks = i.map { validate($0.path) } ?? []
     }
 
-    var valid: Bool { !checks.isEmpty && checks.allSatisfy(\.ok) }
+    var valid: Bool { !checks.isEmpty && checks.allSatisfy(\.ok) && toolsOK }
 
     func choose() {
         let panel = NSOpenPanel()
@@ -254,6 +312,25 @@ struct SetupView: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
+            if !appMode {
+                GroupBox("Build tools") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(model.toolChecks) { CheckRow(check: $0) }
+                        if !model.toolsOK {
+                            HStack {
+                                Text("Building needs Xcode’s command line tools; install them, then check again.")
+                                    .font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                                Spacer()
+                                Button("Install Tools…") { _ = run("/usr/bin/xcode-select", ["--install"]) }
+                                Button("Check Again") { model.checkTools() }
+                            }
+                        }
+                    }
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
             GroupBox("Game installation") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -268,7 +345,7 @@ struct SetupView: View {
                         Text(sel.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                     ForEach(model.checks) { CheckRow(check: $0) }
-                    if model.selected != nil && !model.valid {
+                    if model.selected != nil && !model.checks.allSatisfy(\.ok) {
                         Text("This folder can’t be used. Choose the folder of the Steam (Aspyr) Mac version, version \(supportedVersion).")
                             .font(.callout).foregroundStyle(.red)
                     }

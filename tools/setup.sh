@@ -6,7 +6,8 @@
 # or, without a window (scripts, CI):
 #   tools/setup.sh --game DIR [--bug none|customassets|mod]
 # Writes build/setup.json, points build/game at the installation, and installs,
-# switches or removes BUG Mod in the game's user folder (DOCS below).
+# switches or removes BUG Mod in the game's user folder (DOCS below). The window
+# also checks the build tools (Xcode command line tools, Python, disk space).
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -30,6 +31,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# The build needs Apple Silicon and Xcode's command line tools (clang, swiftc);
+# the setup window checks the rest.
+[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] || { echo "this build needs a Mac with Apple Silicon" >&2; exit 1; }
+if ! xcode-select -p >/dev/null 2>&1 || ! xcrun --find swiftc >/dev/null 2>&1; then
+    echo "Xcode's command line tools are needed to build: install them (a window opens), then run this again." >&2
+    xcode-select --install 2>/dev/null || true
+    exit 1
+fi
+
 if [ -z "$GAME" ]; then
     APP=build/setup/Civ4Setup
     if [ ! -x "$APP" ] || [ tools/setup/Setup.swift -nt "$APP" ] || [ tools/setup/BugMod.swift -nt "$APP" ]; then
@@ -37,7 +47,7 @@ if [ -z "$GAME" ]; then
         swiftc -parse-as-library -O tools/setup/Setup.swift tools/setup/BugMod.swift -o "$APP"
     fi
     rm -f build/setup/choice.json
-    "$APP" --out build/setup/choice.json --current "$(readlink build/game 2>/dev/null || true)" --docs "$DOCS" || true
+    "$APP" --out build/setup/choice.json --root "$ROOT" --current "$(readlink build/game 2>/dev/null || true)" --docs "$DOCS" || true
     [ -s build/setup/choice.json ] || { echo "setup cancelled" >&2; exit 1; }
     GAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["game"])' build/setup/choice.json)
     BUG=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bug"])' build/setup/choice.json)

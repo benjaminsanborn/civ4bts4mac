@@ -12,6 +12,12 @@ fi
 GAME=${1:-"$ROOT/build/game/Beyond the Sword/Civilization IV Beyond the Sword.app/Contents/MacOS/Civilization IV Beyond the Sword"}
 PY="$ROOT/.venv/bin/python"
 cd "$ROOT"
+# The recompiler's Python environment (capstone disassembles the game).
+if ! "$PY" -c 'import capstone' 2>/dev/null; then
+    echo "== python environment (.venv)"
+    python3 -m venv .venv
+    "$PY" -m pip install -q capstone==5.0.7
+fi
 tools/fetch_third_party.sh
 echo "== guest libraries"
 guest/build_libstdcxx.sh
