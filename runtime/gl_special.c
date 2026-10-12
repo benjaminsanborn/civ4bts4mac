@@ -136,7 +136,12 @@ static void scratch_size(Scratch *s, int w, int h, int tex) {
         GLint prev = 0;
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
         glBindTexture(GL_TEXTURE_2D, s->obj);
+        /* With the game's client storage on, allocating without data fails. */
+        GLint client_storage = 0;
+        glGetIntegerv(GL_UNPACK_CLIENT_STORAGE_APPLE, &client_storage);
+        glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, GL_FALSE);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, s->w, s->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glPixelStorei(GL_UNPACK_CLIENT_STORAGE_APPLE, client_storage);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glFramebufferTexture2DEXT(GL_DRAW_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, s->obj, 0);
